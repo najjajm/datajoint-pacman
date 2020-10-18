@@ -1,25 +1,25 @@
 import datajoint as dj
-from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
-from churchland_pipeline_python.utilities import speedgoat, datajointutils as dju
 import os, re, inspect
 import numpy as np
-from decimal import *
+from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
+from churchland_pipeline_python.utilities import speedgoat, datajointutils as dju
+from decimal import Decimal
 
 schema = dj.schema('churchland_analyses_pacman_acquisition')
 
-# -------------------------------------------------------------------------------------------------------------------------------
+# =======
 # LEVEL 0
-# -------------------------------------------------------------------------------------------------------------------------------
+# =======
 
 @schema 
 class ArmPosture(dj.Lookup):
     definition = """
     # Arm posture
     -> lab.Monkey
-    posture_id: tinyint unsigned # unique posture ID number
+    arm_posture_id:   tinyint unsigned # arm posture ID number
     ---
-    elbow_angle: tinyint unsigned # elbow flexion angle in degrees (0 = fully flexed)
-    shoulder_angle: tinyint unsigned # shoulder flexion angle in degrees (0 = arm by side)
+    elbow_flexion:    tinyint unsigned # elbow flexion angle (deg)
+    shoulder_flexion: tinyint unsigned # shoulder flexion angle relative to coronal plane (deg)
     """
     
     contents = [
@@ -27,6 +27,7 @@ class ArmPosture(dj.Lookup):
         ['Cousteau', 2, 90, 40],
         ['Cousteau', 3, 90, 75]
     ]
+
 
 @schema
 class ConditionParams(dj.Lookup):
@@ -38,45 +39,46 @@ class ConditionParams(dj.Lookup):
     """
 
     definition = """
-    condition_id: smallint unsigned
+    condition_id: smallint unsigned # condition ID number
     """
 
     class Force(dj.Part):
         definition = """
         # Force parameters
         -> master
-        force_id: smallint unsigned # ID number
+        force_id:       smallint unsigned # force ID number
         ---
-        force_max: tinyint unsigned # maximum force (N)
-        force_offset: decimal(5,4) # baseline force (N)
-        force_inverted: bool # if false, then pushing on the load cell moves PacMan upwards onscreen
+        force_max:      tinyint unsigned  # maximum force (N)
+        force_offset:   decimal(5,4)      # baseline force (N)
+        force_inverted: bool              # whether pushing on the load cell moves PacMan up (False) or down (True) onscreen
         """
         
     class Stim(dj.Part):
         definition = """
         # CereStim parameters
         -> master
-        stim_id: smallint unsigned # ID number
+        stim_id:         smallint unsigned # stim ID number
         ---
-        stim_current: smallint unsigned # stim current (uA)
-        stim_electrode: smallint unsigned # stim electrode number
-        stim_polarity: tinyint unsigned # stim polarity
-        stim_pulses: tinyint unsigned # number of pulses in stim train
-        stim_width1: smallint unsigned # first pulse duration (us)
-        stim_width2: smallint unsigned # second pulse duration (us)
+        stim_current:    smallint unsigned # stim current (uA)
+        stim_electrode:  smallint unsigned # stim electrode number
+        stim_polarity:   tinyint unsigned  # cathodic (0) or anodic (1) first //TODO check this
+        stim_pulses:     tinyint unsigned  # number of pulses in stim train
+        stim_width1:     smallint unsigned # first pulse duration (us)
+        stim_width2:     smallint unsigned # second pulse duration (us)
         stim_interphase: smallint unsigned # interphase duration (us)
-        stim_frequency: smallint unsigned # stim frequency (Hz)
+        stim_frequency:  smallint unsigned # stim frequency (Hz)
         """
 
     class Target(dj.Part):
         definition = """
         # Target force profile parameters
         -> master
-        target_id: smallint unsigned # ID number
+        target_id:       smallint unsigned # target ID number
         ---
-        target_duration: decimal(5,4) # target duration (s)
-        target_offset: decimal(5,4) # offset from baseline (proportion playable window)
-        target_pad: decimal(5,4) # duration of "padding" dots leading into and out of target (s)
+        target_duration: decimal(5,4)      # target duration (s)
+        target_offset:   decimal(5,4)      # target offset from baseline (proportion playable window)
+        target_pad_pre:  decimal(5,4)      # duration of "padding" dots preceding target force profile (s)
+        target_pad_post: decimal(5,4)      # duration of "padding" dots following target force profile (s)
         """
         
     class Static(dj.Part):
@@ -99,7 +101,7 @@ class ConditionParams(dj.Lookup):
         -> master.Target
         ---
         target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
-        target_frequency: decimal(5,4) # sinusoid frequency (Hz)
+        target_frequency: decimal(5,4) # target frequency (Hz)
         """
         
     class Chirp(dj.Part):
@@ -107,9 +109,9 @@ class ConditionParams(dj.Lookup):
         # Chirp force profile parameters
         -> master.Target
         ---
-        target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
-        target_frequency_init: decimal(5,4) # initial frequency (Hz)
-        target_frequency_final: decimal(5,4) # final frequency (Hz)
+        target_amplitude:       decimal(5,4) # target amplitude (proportion playable window)
+        target_frequency_init:  decimal(5,4) # target initial frequency (Hz)
+        target_frequency_final: decimal(5,4) # target final frequency (Hz)
         """
         
     @classmethod
@@ -148,9 +150,13 @@ class ConditionParams(dj.Lookup):
         # target attributes
         targ_attr = dict(
             target_duration = params['duration'],
-            target_offset = params['offset'][0],
-            target_pad = params['padDur']
+            target_offset = params['offset'][0]
         )
+
+        # target pad durations
+        pad_dur = [v for k,v in params.items() if re.search('padDur',k) is not None]
+        if len(pad_dur) == 1:
+            targ_attr.update(target_pad_pre=pad_dur[0], target_pad_post=pad_dur[0])
 
         # target type attributes
         if params['type'] == 'STA':
@@ -210,8 +216,8 @@ class ConditionParams(dj.Lookup):
         cond_params = {k:float(v) if type(v)==Decimal else v for k,v in cond_params.items()}
 
         # time vector
-        t = np.round(np.arange(-cond_params['target_pad']+1/Fs, \
-            cond_params['target_duration']+cond_params['target_pad']+1/Fs, 1/Fs), prec)
+        t = np.round(np.arange(-cond_params['target_pad_pre']+1/Fs, \
+            cond_params['target_duration']+cond_params['target_pad_post']+1/Fs, 1/Fs), prec)
 
         # target force functions
         if self.Static in part_tables:
@@ -249,18 +255,20 @@ class ConditionParams(dj.Lookup):
 
         return t, force
 
+
 @schema
 class TaskState(dj.Lookup):
     definition = """
     # Simulink Stateflow task state IDs and names
-    task_state_id: tinyint unsigned # task state ID number
+    task_state_id:   tinyint unsigned # task state ID number
     ---
-    task_state_name: varchar(255) # unique task state name
+    task_state_name: varchar(255)     # task state name
     """
     
-# -------------------------------------------------------------------------------------------------------------------------------
+
+# =======
 # LEVEL 1
-# -------------------------------------------------------------------------------------------------------------------------------
+# =======
     
 @schema
 class Behavior(dj.Imported):
@@ -273,7 +281,7 @@ class Behavior(dj.Imported):
         definition = """
         # Save tags and associated notes
         -> master
-        save_tag: tinyint unsigned # save tag
+        save_tag: tinyint unsigned # save tag number
         """
     
     class Condition(dj.Part):
@@ -282,26 +290,26 @@ class Behavior(dj.Imported):
         -> master
         -> ConditionParams
         ---
-        condition_time: longblob # target time vector (s)
-        condition_force: longblob # target force profile (N)
+        condition_time:  longblob # condition time vector (s)
+        condition_force: longblob # condition force profile (N)
         """
 
     class Trial(dj.Part):
         definition = """
         # Trial data
         -> master
-        trial_number: smallint unsigned # trial number (within session)
+        trial:             smallint unsigned # session trial number
         ---
         -> Behavior.Condition
         -> master.SaveTag
-        successful_trial: bool
-        simulation_time: longblob # absolute simulation time
-        task_state: longblob # task state IDs
-        force_raw_online: longblob # amplified output of load cell
-        force_filt_online: longblob # online (boxcar) filtered and normalized force used to control Pac-Man
-        reward: longblob # TTL signal indicating the delivery of juice reward
-        photobox: longblob # photobox signal
-        stim = null: longblob # TTL signal indicating the delivery of a stim pulse
+        successful_trial:  bool             # whether the trial was successful
+        simulation_time:   longblob         # task model simulation time
+        task_state:        longblob         # task state IDs
+        force_raw_online:  longblob         # amplified output of load cell
+        force_filt_online: longblob         # online (boxcar) filtered and normalized force used to control Pac-Man
+        reward:            longblob         # TTL signal indicating the delivery of juice reward
+        photobox:          longblob         # photobox signal
+        stim = null:       longblob         # TTL signal indicating the delivery of a stim pulse
         """
 
         def processforce(self, data_type='raw', filter=True):
@@ -357,7 +365,7 @@ class Behavior(dj.Imported):
 
         # local path to behavioral summary file and sample rate
         behavior_summary_path, fs = (acquisition.BehaviorRecording & key).fetch1('behavior_summary_file_path', 'behavior_sample_rate')
-        behavior_summary_path = (reference.EngramPath & {'engram_tier': 'locker'}).ensurelocal(behavior_summary_path)
+        behavior_summary_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensurelocal(behavior_summary_path)
 
         # path to all behavior files
         behavior_path = os.path.sep.join(behavior_summary_path.split(os.path.sep)[:-1] + [''])
@@ -480,5 +488,5 @@ class Behavior(dj.Imported):
                         self.SaveTag.insert1(save_tag_key)
 
                     # insert trial data
-                    trial_key = dict(**key, trial_number=trial, condition_id=cond_id, **data, save_tag=params['saveTag'])
+                    trial_key = dict(**key, trial=trial, condition_id=cond_id, **data, save_tag=params['saveTag'])
                     self.Trial.insert1(trial_key)
