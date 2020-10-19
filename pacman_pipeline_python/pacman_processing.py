@@ -1,6 +1,6 @@
 import datajoint as dj
+import inspect, itertools
 import numpy as np
-import itertools, inspect
 from churchland_pipeline_python import lab, acquisition, processing, equipment
 from churchland_pipeline_python.utilities import datasync, datajointutils as dju
 from . import pacman_acquisition
@@ -8,15 +8,19 @@ from datetime import datetime
 
 schema = dj.schema('churchland_analyses_pacman_processing')
 
+# =======
+# LEVEL 0
+# =======
+
 @schema
 class AlignmentParams(dj.Manual):
     definition = """
-    # Task state IDs used to align trials
+    # Parameters for aligning trials
     -> pacman_acquisition.Behavior
-    alignment_params_id: tinyint unsigned
+    alignment_params_id:     tinyint unsigned # alignment params ID number
     ---
     -> pacman_acquisition.TaskState
-    alignment_max_lag = 0.2: decimal(4,3) # maximum allowable lag (s)
+    alignment_max_lag = 0.2: decimal(4,3)     # maximum absolute time lag for shifting each trial (s)
     """
     
     @classmethod
@@ -53,7 +57,7 @@ class BehaviorBlock(dj.Manual):
     definition = """
     # Set of save tags and behavioral recording parameters for conducting analyses
     -> pacman_acquisition.Behavior
-    behavior_block_id: tinyint unsigned # block ID
+    behavior_block_id: tinyint unsigned # behavior block ID number
     ---
     -> pacman_acquisition.ArmPosture
     """
@@ -63,6 +67,7 @@ class BehaviorBlock(dj.Manual):
         -> master
         -> pacman_acquisition.Behavior.SaveTag
         """
+
 
 @schema
 class EphysTrialStart(dj.Imported):
@@ -109,7 +114,7 @@ class FilterParams(dj.Manual):
     definition = """
     # Set of filter parameters for smoothing forces and spike trains
     -> pacman_acquisition.Behavior.Condition
-    filter_params_id: tinyint unsigned
+    filter_params_id: tinyint unsigned # filter params ID number
     ---
     -> processing.Filter
     """
@@ -144,9 +149,10 @@ class FilterParams(dj.Manual):
 
             self.insert1(dict(**cond_key, filter_params_id=new_param_id, **filt_key))
 
-# -------------------------------------------------------------------------------------------------------------------------------
-# LEVEL 2
-# -------------------------------------------------------------------------------------------------------------------------------
+
+# =======
+# LEVEL 1
+# =======
 
 @schema
 class MotorUnitPsth(dj.Computed):
@@ -156,8 +162,9 @@ class MotorUnitPsth(dj.Computed):
     -> BehaviorBlock
     -> FilterParams
     ---
-    motor_unit_psth: longblob # psth
+    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
     """
+
 
 @schema
 class NeuronPsth(dj.Computed):
@@ -167,8 +174,9 @@ class NeuronPsth(dj.Computed):
     -> BehaviorBlock
     -> FilterParams
     ---
-    neuron_psth: longblob # psth
+    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
     """
+
 
 @schema
 class TrialAlignment(dj.Computed):
@@ -177,8 +185,9 @@ class TrialAlignment(dj.Computed):
     -> EphysTrialStart
     -> AlignmentParams
     ---
-    behavior_alignment: longblob # alignment indices for Speedgoat data
-    ephys_alignment: longblob # alignment indices for Ephys data
+    valid_alignment = 0:       bool     # whether the trial can be aligned
+    behavior_alignment = null: longblob # trial alignment indices for behavioral data
+    ephys_alignment = null:    longblob # trial alignment indices for ephys data
     """
     
     # restrict to trials with a defined start index
@@ -210,7 +219,7 @@ class TrialAlignment(dj.Computed):
 
         # fetch target force and time
         t, target_force = (pacman_acquisition.Behavior.Condition & trial_rel).fetch1('condition_time', 'condition_force')
-        zero_idx = next(i for i in range(len(t)) if t[i]>=0)
+        zero_idx = next(i for i in range(len(t)) if t[i]>=0)        
 
         # phase correct dynamic conditions
         if not pacman_acquisition.ConditionParams.Static & trial_rel:
@@ -220,7 +229,7 @@ class TrialAlignment(dj.Computed):
             max_lag_samp = int(round(fs_beh * max_lag))
             lags = range(-max_lag_samp, 1+max_lag_samp)
 
-            # truncate time indices  
+            # truncate time indices  ap
             precision = int(np.log10(fs_beh))
             trunc_idx = np.nonzero((t>=round(t[0]+max_lag, precision)) & (t<=round(t[-1]-max_lag, precision)))[0]
             target_force = target_force[trunc_idx]
@@ -232,7 +241,7 @@ class TrialAlignment(dj.Computed):
             # compute normalized mean squared error for each lag
             nmse = np.full(1+2*max_lag_samp, -np.inf)
             for idx, lag in enumerate(lags):
-                if (align_idx+lag+align_idx_trunc[-1]) < len(force):
+                if (align_idx + lag + align_idx_trunc[-1]) < len(force):
                     force_align = force[align_idx+lag+align_idx_trunc]
                     nmse[idx] = 1 - np.sqrt(np.mean((force_align-target_force)**2)/np.var(target_force))
 
@@ -241,30 +250,36 @@ class TrialAlignment(dj.Computed):
 
         # behavior alignment indices
         behavior_alignment = np.array(range(len(t))) + align_idx - zero_idx
-        key.update(behavior_alignment=behavior_alignment)
 
-        # ephys alignment indices
-        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_sample_rate')
-        ephys_alignment = np.round(fs_ephys * np.arange(t[0], t[-1]+1/fs_beh, 1/fs_ephys)) + (align_idx - zero_idx) * int(fs_ephys/fs_beh)
-        ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
-        ephys_alignment = ephys_alignment.astype(int)
-        key.update(ephys_alignment=ephys_alignment)
+        if behavior_alignment[-1] < len(trial_rel.fetch1('force_raw_online')):
+
+            key.update(valid_alignment=1, behavior_alignment=behavior_alignment)
+
+            # ephys alignment indices
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_sample_rate')
+            ephys_alignment = np.round(fs_ephys * np.arange(t[0], t[-1]+1/fs_beh, 1/fs_ephys)) + (align_idx - zero_idx) * int(fs_ephys/fs_beh)
+            ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
+            ephys_alignment = ephys_alignment.astype(int)
+            key.update(ephys_alignment=ephys_alignment)
 
         self.insert1(key)
 
-# -------------------------------------------------------------------------------------------------------------------------------
-# LEVEL 3
-# -------------------------------------------------------------------------------------------------------------------------------    
+
+# =======
+# LEVEL 2
+# =======
+
 @schema
 class Emg(dj.Imported):
     definition = """
     # raw, trialized, and aligned EMG data
     -> acquisition.EmgChannelGroup
     -> TrialAlignment
-    emg_channel: tinyint unsigned # channel number (indexed relative to EMG channel group)
+    emg_channel:        tinyint unsigned # EMG channel number (indexed relative to EMG channel group)
     ---
-    emg_voltage_signal: longblob # channel data
+    emg_voltage_signal: longblob         # EMG voltage signal
     """
+
 
 @schema
 class Force(dj.Computed):
@@ -273,12 +288,12 @@ class Force(dj.Computed):
     -> TrialAlignment
     -> FilterParams
     ---
-    force_raw = null: longblob # aligned raw (online) force [Volts]
-    force_filt = null: longblob # offline filtered, aligned, and calibrated force [Newtons]
+    force_raw = null:  longblob # raw (online), aligned force signal (V)
+    force_filt = null: longblob # filtered, aligned, and calibrated force (N)
     """
 
     # restrict key source to actual condition/trial combinations  
-    key_source = (TrialAlignment * FilterParams) & pacman_acquisition.Behavior.Trial
+    key_source = ((TrialAlignment & 'valid_alignment') * FilterParams) & pacman_acquisition.Behavior.Trial
 
     def make(self, key):
 
@@ -312,8 +327,9 @@ class MotorUnitSpikes(dj.Computed):
     -> processing.MotorUnit
     -> TrialAlignment
     ---
-    motor_unit_spikes: longblob # trial-aligned spike raster (logical)
+    motor_unit_spikes: longblob # motor unit trial-aligned spike raster (boolean array)
     """
+
 
 @schema
 class NeuronSpikes(dj.Computed):
@@ -322,12 +338,13 @@ class NeuronSpikes(dj.Computed):
     -> processing.Neuron
     -> TrialAlignment
     ---
-    neuron_spikes: longblob # trial-aligned spike raster (logical)
+    neuron_spikes: longblob # neuron trial-aligned spike raster (boolean array)
     """
 
-# -------------------------------------------------------------------------------------------------------------------------------
-# LEVEL 4
-# -------------------------------------------------------------------------------------------------------------------------------
+
+# =======
+# LEVEL 3
+# =======
     
 @schema 
 class BehaviorQuality(dj.Computed):
@@ -335,41 +352,43 @@ class BehaviorQuality(dj.Computed):
     # Behavior quality metrics
     -> Force
     ---
-    max_err_target: decimal(6,4) # maximum (over time) absolute error, normalized by the range of the target force
-    max_err_mean: decimal(6,4) # maximum (over time) absolute z-scored error
+    max_err_target:  decimal(6,4) # maximum (over time) absolute error, normalized by the range of the target force
+    max_err_mean:    decimal(6,4) # maximum (over time) absolute z-scored error
     mah_dist_target: decimal(6,4) # Mahalanobis distance relative to the target force
-    mah_dist_mean: decimal(6,4) # Mahalanobis distance relative to the trial average
+    mah_dist_mean:   decimal(6,4) # Mahalanobis distance relative to the trial average
     """
+
 
 @schema
 class MotorUnitRate(dj.Computed):
     definition = """
-    # Aligned motor unit trial firing rate
+    # Aligned motor unit single-trial firing rate
     -> MotorUnitSpikes
     -> FilterParams
     ---
-    motor_unit_rate: longblob # trial-aligned firing rate [Hz]
+    motor_unit_rate: longblob # motor unit trial-aligned firing rate (spikes/s)
     """
     
+
 @schema
 class NeuronRate(dj.Computed):
     definition = """
-    # Aligned neuron trial firing rate
+    # Aligned neuron single-trial firing rate
     -> NeuronSpikes
     -> FilterParams
     ---
-    neuron_rate: longblob # trial-aligned firing rate [Hz]
+    neuron_rate: longblob # neuron trial-aligned firing rate (spikes/s)
     """
 
-# -------------------------------------------------------------------------------------------------------------------------------
-# LEVEL 5
-# ------------------------------------------------------------------------------------------------------------------------------- 
+
+# =======
+# LEVEL 4
+# =======
 
 @schema 
 class GoodTrial(dj.Computed):
     definition = """
     # Trials that meet behavior quality thresholds
     -> BehaviorQuality
-    ---
     """
      
