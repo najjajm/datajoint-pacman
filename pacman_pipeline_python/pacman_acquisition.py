@@ -320,8 +320,8 @@ class Behavior(dj.Imported):
             
             # load cell parameters
             load_cell_rel = (acquisition.Session.Hardware & session_key & {'hardware':'5lb Load Cell'}) * equipment.Hardware.Parameter
-            load_cell_capacity = (load_cell_rel & {'parameter':'force capacity'}).fetch1('parameter_value')
-            load_cell_output = (load_cell_rel & {'parameter':'voltage output'}).fetch1('parameter_value')
+            load_cell_capacity = (load_cell_rel & {'equipment_parameter':'force capacity'}).fetch1('equipment_parameter_value')
+            load_cell_output = (load_cell_rel & {'equipment_parameter':'voltage output'}).fetch1('equipment_parameter_value')
 
             # convert load cell capacity from Volts to Newtons
             lbs_per_N = 0.224809
