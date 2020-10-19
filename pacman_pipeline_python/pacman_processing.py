@@ -288,8 +288,8 @@ class Force(dj.Computed):
     -> TrialAlignment
     -> FilterParams
     ---
-    force_raw = null:  longblob # raw (online), aligned force signal (V)
-    force_filt = null: longblob # filtered, aligned, and calibrated force (N)
+    force_raw:  longblob # raw (online), aligned force signal (V)
+    force_filt: longblob # filtered, aligned, and calibrated force (N)
     """
 
     # restrict key source to actual condition/trial combinations  
