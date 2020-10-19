@@ -299,17 +299,15 @@ class Force(dj.Computed):
 
         # convert raw force signal to Newtons
         trial_rel = pacman_acquisition.Behavior.Trial & key
-        force = trial_rel.processforce(data_type='raw',filter=False)
+        force = trial_rel.processforce(data_type='raw', filter=False)
 
         # align force signal
         beh_align = (TrialAlignment & key).fetch1('behavior_alignment')
         force_raw_align = force[beh_align]
 
         # get filter kernel
-        filter_id = (processing.Filter & key).fetch1('filter_id')
-        _, filter_parts = dju.joinparts(processing.Filter, {'filter_id': filter_id}, context=inspect.currentframe())
-        assert len(filter_parts) == 2, 'Filter ID associated with more than one kernel!'
-        filter_rel = next(filter(lambda x: x in dju.getchildren(processing.Filter, context=inspect.currentframe()), filter_parts))
+        filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+        filter_rel = next(part for part in filter_parts if part & key)
 
         # apply filter
         fs = (acquisition.BehaviorRecording & key).fetch1('behavior_sample_rate')
