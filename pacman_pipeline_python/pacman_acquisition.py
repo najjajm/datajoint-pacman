@@ -5,7 +5,7 @@ from churchland_pipeline_python import lab, acquisition, equipment, reference, p
 from churchland_pipeline_python.utilities import speedgoat, datajointutils as dju
 from decimal import Decimal
 
-schema = dj.schema('churchland_analyses_pacman_acquisition')
+schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_acquisition')
 
 # =======
 # LEVEL 0

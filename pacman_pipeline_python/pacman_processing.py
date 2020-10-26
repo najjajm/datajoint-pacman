@@ -6,7 +6,7 @@ from churchland_pipeline_python.utilities import datasync, datajointutils as dju
 from . import pacman_acquisition
 from datetime import datetime
 
-schema = dj.schema('churchland_analyses_pacman_processing')
+schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_processing')
 
 # =======
 # LEVEL 0
