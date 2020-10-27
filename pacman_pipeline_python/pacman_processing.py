@@ -1,6 +1,8 @@
 import datajoint as dj
-import inspect, itertools
+import os, inspect, itertools
+import pandas as pd
 import numpy as np
+import progressbar
 from churchland_pipeline_python import lab, acquisition, processing, equipment
 from churchland_pipeline_python.utilities import datasync, datajointutils as dju
 from . import pacman_acquisition
@@ -27,7 +29,7 @@ class AlignmentParams(dj.Manual):
     def populate(self, 
         behavior_rel: pacman_acquisition.Behavior=pacman_acquisition.Behavior(), 
         task_state_rel: pacman_acquisition.TaskState=(pacman_acquisition.TaskState & {'task_state_name': 'InTarget'}), 
-        max_lag: int=0.2):
+        max_lag: int=0.2) -> None:
 
         # check inputs
         assert isinstance(behavior_rel, pacman_acquisition.Behavior), 'Unrecognized behavior table'
@@ -68,6 +70,42 @@ class BehaviorBlock(dj.Manual):
         -> pacman_acquisition.Behavior.SaveTag
         """
 
+    @classmethod
+    def insert_from_file(self,
+        monkey: str
+    ) -> None:
+        """Inserts behavior block entries by reading data from a csv file."""
+
+        # read table from metadata
+        metadata_path = os.path.join(os.path.dirname(__file__), '..', 'metadata', '')
+        behavior_block_df = pd.read_csv(metadata_path + monkey.lower() + '_behavior_block.csv')
+
+        # convert dataframe to behavior block keys (remove secondary attributes)
+        behavior_block_key = behavior_block_df\
+            .drop(['arm_posture_id', 'save_tag'], axis=1)\
+            .to_dict(orient='records')
+
+        # prepend dataframe index to key
+        behavior_block_key = [(idx, key) for idx, key in enumerate(behavior_block_key)]
+
+        # filter keys by those in behavior table but not in behavior block table
+        behavior_block_key = [(idx, key) for idx, key in behavior_block_key
+            if (pacman_acquisition.Behavior & key) and not (self & key)]
+
+        # insert entries
+        for idx, key in behavior_block_key:
+
+            # insert behavior block
+            self.insert1(dict(**key, arm_posture_id=behavior_block_df.loc[idx, 'arm_posture_id']))
+
+            # read save tags for block
+            save_tags = eval('[' + behavior_block_df.loc[idx,'save_tag'] + ']')
+
+            # insert behavior block save tags
+            for tag in save_tags:
+                
+                self.SaveTag.insert1(dict(**key, save_tag=tag))
+
 
 @schema
 class EphysTrialStart(dj.Imported):
@@ -85,7 +123,7 @@ class EphysTrialStart(dj.Imported):
         session_key = (acquisition.Session & key).fetch1('KEY')
 
         # ephys sample rate
-        fs_ephys = (acquisition.EphysRecording & session_key).fetch1('ephys_sample_rate') 
+        fs_ephys = (acquisition.EphysRecording & session_key).fetch1('ephys_recording_sample_rate') 
 
         # all trial keys with simulation time
         trial_keys = (pacman_acquisition.Behavior.Trial & session_key).fetch('KEY','simulation_time',as_dict=True)
@@ -215,7 +253,7 @@ class TrialAlignment(dj.Computed):
             align_idx = next(i for i in range(len(task_state)) if task_state[i] == full_key['task_state_id'])
 
         # behavioral sample rate
-        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_sample_rate')
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
 
         # fetch target force and time
         t, target_force = (pacman_acquisition.Behavior.Condition & trial_rel).fetch1('condition_time', 'condition_force')
@@ -256,7 +294,7 @@ class TrialAlignment(dj.Computed):
             key.update(valid_alignment=1, behavior_alignment=behavior_alignment)
 
             # ephys alignment indices
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_sample_rate')
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
             ephys_alignment = np.round(fs_ephys * np.arange(t[0], t[-1]+1/fs_beh, 1/fs_ephys)) + (align_idx - zero_idx) * int(fs_ephys/fs_beh)
             ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
             ephys_alignment = ephys_alignment.astype(int)
@@ -310,7 +348,7 @@ class Force(dj.Computed):
         filter_rel = next(part for part in filter_parts if part & key)
 
         # apply filter
-        fs = (acquisition.BehaviorRecording & key).fetch1('behavior_sample_rate')
+        fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
         force_filt_align = filter_rel().filter(force_raw_align, fs)
 
         key.update(force_raw=force_raw_align, force_filt=force_filt_align)
