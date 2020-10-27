@@ -23,9 +23,9 @@ class ArmPosture(dj.Lookup):
     """
     
     contents = [
-        ['Cousteau', 1, 90, 65],
-        ['Cousteau', 2, 90, 40],
-        ['Cousteau', 3, 90, 75]
+        ['Cousteau', 0, 90, 65],
+        ['Cousteau', 1, 90, 40],
+        ['Cousteau', 2, 90, 75]
     ]
 
 
@@ -339,7 +339,7 @@ class Behavior(dj.Imported):
             force_data = force_rel.fetch('force_max', 'force_offset', data_attr, as_dict=True)
 
             # sample rate
-            fs = (acquisition.BehaviorRecording & self).fetch1('behavior_sample_rate')
+            fs = (acquisition.BehaviorRecording & self).fetch1('behavior_recording_sample_rate')
 
             # process trial data
             for f in force_data:
@@ -363,17 +363,18 @@ class Behavior(dj.Imported):
 
         self.insert1(key)
 
-        # local path to behavioral summary file and sample rate
-        behavior_summary_path, fs = (acquisition.BehaviorRecording & key).fetch1('behavior_summary_file_path', 'behavior_sample_rate')
-        behavior_summary_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensurelocal(behavior_summary_path)
+        # behavior recording files
+        behavior_files = acquisition.BehaviorRecording.File & key
 
-        # path to all behavior files
-        behavior_path = os.path.sep.join(behavior_summary_path.split(os.path.sep)[:-1] + [''])
+        if (acquisition.Session.Hardware & key & {'hardware': 'Speedgoat'}):
 
-        # identify task controller
-        task_controller_hardware = (acquisition.Task & acquisition.Session & key).fetch1('task_controller_hardware')
+            # local path to behavioral summary file and sample rate
+            fs, behavior_recording_path, behavior_file_prefix, behavior_file_extension \
+                = (acquisition.BehaviorRecording * (behavior_files & {'behavior_file_extension': 'summary'}))\
+                    .fetch1('behavior_recording_sample_rate', 'behavior_recording_path', 'behavior_file_prefix', 'behavior_file_extension')
 
-        if task_controller_hardware == 'Speedgoat':
+            behavior_summary_path = (reference.EngramTier & {'engram_tier': 'locker'})\
+                .ensurelocal(behavior_recording_path + behavior_file_prefix + '.' + behavior_file_extension)
 
             # load summary file
             summary = speedgoat.readtaskstates(behavior_summary_path)
@@ -381,10 +382,9 @@ class Behavior(dj.Imported):
             # update task states
             TaskState.insert(summary, skip_duplicates=True)
 
-            # parameter and data files
-            behavior_files = os.listdir(behavior_path)
-            param_files = [f for f in behavior_files if f.endswith('.params')]
-            data_files = [f for f in behavior_files if f.endswith('.data')]
+            # parameter and data file extensions
+            param_files = [f + '.params' for f in (behavior_files & {'behavior_file_extension': 'params'}).fetch('behavior_file_prefix')]
+            data_files =  [f + '.data'   for f in (behavior_files & {'behavior_file_extension': 'data'}).fetch('behavior_file_prefix')]
 
             # populate conditions from parameter files
             for f_param in param_files:
@@ -399,7 +399,7 @@ class Behavior(dj.Imported):
 
                 else:
                     # read params file
-                    params = speedgoat.readtrialparams(behavior_path + f_param)
+                    params = speedgoat.readtrialparams(behavior_recording_path + f_param)
 
                     # extract condition attributes from params file
                     cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
@@ -465,11 +465,11 @@ class Behavior(dj.Imported):
                     print('Missing parameters file for trial {}'.format(trial))
                 else:
                     # convert params to condition keys
-                    params = speedgoat.readtrialparams(behavior_path + param_file)
+                    params = speedgoat.readtrialparams(behavior_recording_path + param_file)
                     cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
 
                     # read data
-                    data = speedgoat.readtrialdata(behavior_path + f_data, success_state, fs)
+                    data = speedgoat.readtrialdata(behavior_recording_path + f_data, success_state, fs)
 
                     # aggregate condition part table parameters into a single dictionary
                     all_cond_attr = {k: v for d in list(cond_attr.values()) for k, v in d.items()}
@@ -490,3 +490,7 @@ class Behavior(dj.Imported):
                     # insert trial data
                     trial_key = dict(**key, trial=trial, condition_id=cond_id, **data, save_tag=params['saveTag'])
                     self.Trial.insert1(trial_key)
+
+        else: 
+            print('Unrecognized task controller')
+            return None
