@@ -320,12 +320,8 @@ class Behavior(dj.Imported):
             
             # load cell parameters
             load_cell_rel = (acquisition.Session.Hardware & session_key & {'hardware':'5lb Load Cell'}) * equipment.Hardware.Parameter
-            load_cell_capacity = (load_cell_rel & {'equipment_parameter':'force capacity'}).fetch1('equipment_parameter_value')
-            load_cell_output = (load_cell_rel & {'equipment_parameter':'voltage output'}).fetch1('equipment_parameter_value')
-
-            # convert load cell capacity from Volts to Newtons
-            lbs_per_N = 0.224809
-            load_cell_capacity /= lbs_per_N
+            load_cell_capacity = (load_cell_rel & {'equipment_parameter':'force capacity'}).fetch1('equipment_parameter_value') # (Newtons)
+            load_cell_output = (load_cell_rel & {'equipment_parameter':'voltage output'}).fetch1('equipment_parameter_value') # (Volts)
 
             # 25 ms Gaussian filter
             filter_rel = processing.Filter.Gaussian & {'sd':25e-3, 'width':4}
@@ -344,8 +340,19 @@ class Behavior(dj.Imported):
             # process trial data
             for f in force_data:
 
-                # convert units
-                f[data_attr] = f['force_max'] * (f[data_attr]/load_cell_output * load_cell_capacity/f['force_max'] - float(f['force_offset']))
+                f[data_attr] = f[data_attr].copy()
+
+                # normalize force (V) by load cell capacity (V)
+                f[data_attr] /= load_cell_output
+
+                # convert force to proportion of maximum load cell output (N)
+                f[data_attr] *= load_cell_capacity/f['force_max']
+
+                # subtract baseline force (N)
+                f[data_attr] -= float(f['force_offset'])
+
+                # multiply force by maximum gain (N)
+                f[data_attr] *= f['force_max']
 
                 # filter
                 if filter:
