@@ -277,13 +277,6 @@ class Behavior(dj.Imported):
     -> acquisition.BehaviorRecording
     """
 
-    class SaveTag(dj.Part):
-        definition = """
-        # Save tags and associated notes
-        -> master
-        save_tag: tinyint unsigned # save tag number
-        """
-    
     class Condition(dj.Part):
         definition = """
         # Condition data
@@ -294,13 +287,19 @@ class Behavior(dj.Imported):
         condition_force: longblob # condition force profile (N)
         """
 
+    class SaveTag(dj.Part):
+        definition = """
+        # Save tags and associated notes
+        -> master
+        save_tag: tinyint unsigned # save tag number
+        """
+
     class Trial(dj.Part):
         definition = """
         # Trial data
-        -> master
+        -> master.Condition
         trial:             smallint unsigned # session trial number
         ---
-        -> Behavior.Condition
         -> master.SaveTag
         successful_trial:  bool             # whether the trial was successful
         simulation_time:   longblob         # task model simulation time
