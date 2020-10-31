@@ -209,15 +209,27 @@ class ConditionParams(dj.Lookup):
         # condition parameters
         cond_params = joined_table.fetch1()
 
-        # get precision from Decimal
-        prec = max([abs(v.as_tuple().exponent) for v in cond_params.values() if type(v)==Decimal])
-
         # convert condition parameters to float
-        cond_params = {k:float(v) if type(v)==Decimal else v for k,v in cond_params.items()}
+        cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
 
         # time vector
-        t = np.round(np.arange(-cond_params['target_pad_pre']+1/Fs, \
-            cond_params['target_duration']+cond_params['target_pad_post']+1/Fs, 1/Fs), prec)
+        t = np.concatenate((
+            np.linspace(
+                -cond_params['target_pad_pre'], 
+                0, 
+                1+cond_params['target_pad_pre']*int(Fs)
+            )[:-1],
+            np.linspace(
+                0, 
+                cond_params['target_duration'], 
+                1+cond_params['target_duration']*int(Fs)
+            ),
+            np.linspace(
+                cond_params['target_duration'], 
+                cond_params['target_duration']+cond_params['target_pad_post'], 
+                1+cond_params['target_pad_post']*int(Fs)
+            )[1:]
+        ))
 
         # target force functions
         if self.Static in part_tables:
@@ -242,8 +254,8 @@ class ConditionParams(dj.Lookup):
 
         # indices of target regions
         t_idx = {
-            'pre': t<=0,
-            'target': (t>0) & (t<=cond_params['target_duration']),
+            'pre': t<0,
+            'target': (t>=0) & (t<=cond_params['target_duration']),
             'post': t>cond_params['target_duration']}
 
         # target force profile
