@@ -2,11 +2,14 @@ import datajoint as dj
 import os, inspect, itertools
 import pandas as pd
 import numpy as np
+import neo
 import progressbar
-from churchland_pipeline_python import lab, acquisition, processing, equipment
+import matplotlib.pyplot as plt
+from churchland_pipeline_python import lab, acquisition, processing, equipment, reference
 from churchland_pipeline_python.utilities import datasync, datajointutils as dju
 from . import pacman_acquisition
 from datetime import datetime
+from sklearn import decomposition
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_processing')
 
@@ -193,30 +196,6 @@ class FilterParams(dj.Manual):
 # =======
 
 @schema
-class MotorUnitPsth(dj.Computed):
-    definition = """
-    # Peri-stimulus time histogram
-    -> processing.MotorUnit
-    -> BehaviorBlock
-    -> FilterParams
-    ---
-    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
-    """
-
-
-@schema
-class NeuronPsth(dj.Computed):
-    definition = """
-    # Peri-stimulus time histogram
-    -> processing.Neuron
-    -> BehaviorBlock
-    -> FilterParams
-    ---
-    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
-    """
-
-
-@schema
 class TrialAlignment(dj.Computed):
     definition = """
     # Trial alignment indices for behavior and ephys data 
@@ -243,7 +222,7 @@ class TrialAlignment(dj.Computed):
         # set alignment index
         if pacman_acquisition.ConditionParams.Stim & trial_rel:
 
-            # align to stimulation
+            # align to stimulationa
             stim = trial_rel.fetch1('stim')
             align_idx = next(i for i in range(len(stim)) if stim[i])
 
@@ -257,7 +236,10 @@ class TrialAlignment(dj.Computed):
 
         # fetch target force and time
         t, target_force = (pacman_acquisition.Behavior.Condition & trial_rel).fetch1('condition_time', 'condition_force')
-        zero_idx = next(i for i in range(len(t)) if t[i]>=0)        
+        
+        # behavior time indices and zero index
+        t_idx_beh = (fs_beh * t).astype(int)
+        zero_idx = np.argmax(t_idx_beh == 0)   
 
         # phase correct dynamic conditions
         if not pacman_acquisition.ConditionParams.Static & trial_rel:
@@ -268,7 +250,7 @@ class TrialAlignment(dj.Computed):
             lags = range(-max_lag_samp, 1+max_lag_samp)
 
             # truncate time indices  ap
-            precision = int(np.log10(fs_beh))
+            precision = int(round(np.log10(fs_beh)))
             trunc_idx = np.nonzero((t>=round(t[0]+max_lag, precision)) & (t<=round(t[-1]-max_lag, precision)))[0]
             target_force = target_force[trunc_idx]
             align_idx_trunc = trunc_idx - zero_idx
@@ -287,7 +269,7 @@ class TrialAlignment(dj.Computed):
             align_idx += lags[np.argmax(nmse)]
 
         # behavior alignment indices
-        behavior_alignment = np.array(range(len(t))) + align_idx - zero_idx
+        behavior_alignment = t_idx_beh + align_idx
 
         if behavior_alignment[-1] < len(trial_rel.fetch1('force_raw_online')):
 
@@ -295,9 +277,9 @@ class TrialAlignment(dj.Computed):
 
             # ephys alignment indices
             fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            ephys_alignment = np.round(fs_ephys * np.arange(t[0], t[-1]+1/fs_beh, 1/fs_ephys)) + (align_idx - zero_idx) * int(fs_ephys/fs_beh)
+            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+round(fs_ephys * np.ptp(t)))).astype(int)
+            ephys_alignment = t_idx_ephys + align_idx * round(fs_ephys/fs_beh)
             ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
-            ephys_alignment = ephys_alignment.astype(int)
             key.update(ephys_alignment=ephys_alignment)
 
         self.insert1(key)
@@ -311,12 +293,49 @@ class TrialAlignment(dj.Computed):
 class Emg(dj.Imported):
     definition = """
     # raw, trialized, and aligned EMG data
-    -> acquisition.EmgChannelGroup
+    -> acquisition.EmgChannelGroup.Channel
     -> TrialAlignment
-    emg_channel:        tinyint unsigned # EMG channel number (indexed relative to EMG channel group)
     ---
-    emg_voltage_signal: longblob         # EMG voltage signal
+    emg_signal: longblob # EMG voltage signal
     """
+
+    key_source = acquisition.EmgChannelGroup.Channel * (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch local ephys recording file path
+        file_path, file_prefix, file_extension = (acquisition.EphysRecording * (acquisition.EphysRecording.File & key))\
+            .fetch1('ephys_recording_path', 'ephys_file_prefix', 'ephys_file_extension')
+
+        ephys_file_path = (reference.EngramTier & {'engram_tier': 'locker'})\
+            .ensurelocal(file_path + file_prefix + '.' + file_extension)
+
+        # read NSx file
+        reader = neo.rawio.BlackrockRawIO(ephys_file_path)
+        reader.parse_header()
+
+        # fetch channel ID and index
+        chan_id, chan_idx = (acquisition.EphysRecording.Channel & key).fetch1('ephys_channel_id', 'ephys_channel_idx')
+
+        # channel ID and gain
+        id_idx, gain_idx = [
+            idx for idx, name in enumerate(reader.header['signal_channels'].dtype.names) \
+            if name in ['id','gain']
+        ]
+        chan_gain = next(chan[gain_idx] for chan in reader.header['signal_channels'] if chan[id_idx]==chan_id)
+
+        # extract NSx channel data from memory map (within a nested dictionary)
+        nsx_data = next(iter(reader.nsx_datas.values()))
+        nsx_data = next(iter(nsx_data.values()))
+
+        # fetch ephys alignment indices
+        ephys_alignment = (TrialAlignment & key).fetch1('ephys_alignment')
+
+        # extract emg signal from NSx array and apply gain
+        emg_signal = chan_gain * nsx_data[ephys_alignment, chan_idx]
+
+        # insert emg signal
+        self.insert1(dict(**key, emg_signal=emg_signal))
 
 
 @schema
@@ -330,8 +349,7 @@ class Force(dj.Computed):
     force_filt: longblob # filtered, aligned, and calibrated force (N)
     """
 
-    # restrict key source to actual condition/trial combinations  
-    key_source = ((TrialAlignment & 'valid_alignment') * FilterParams) & pacman_acquisition.Behavior.Trial
+    key_source = (TrialAlignment & 'valid_alignment') * FilterParams
 
     def make(self, key):
 
@@ -339,43 +357,236 @@ class Force(dj.Computed):
         trial_rel = pacman_acquisition.Behavior.Trial & key
         force = trial_rel.processforce(data_type='raw', filter=False)
 
-        # align force signal
-        beh_align = (TrialAlignment & key).fetch1('behavior_alignment')
-        force_raw_align = force[beh_align]
-
         # get filter kernel
+        filter_key = (processing.Filter & (FilterParams & key)).fetch1('KEY')
         filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
-        filter_rel = next(part for part in filter_parts if part & key)
+        filter_rel = next(part for part in filter_parts if part & filter_key)
 
         # apply filter
         fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-        force_filt_align = filter_rel().filter(force_raw_align, fs)
+        force_filt = filter_rel().filter(force.copy(), fs)
+
+        # align force signal
+        beh_align = (TrialAlignment & key).fetch1('behavior_alignment')
+        force_raw_align = force.copy()[beh_align]
+        force_filt_align = force_filt[beh_align]
 
         key.update(force_raw=force_raw_align, force_filt=force_filt_align)
 
         self.insert1(key)
 
+    def plot(self):
+        """Plot force trials."""
+
+        condition_keys = (pacman_acquisition.ConditionParams & self).fetch('KEY')
+        n_conditions = len(condition_keys)
+
+        n_columns = np.ceil(np.sqrt(n_conditions)).astype(int)
+        n_rows = np.ceil(n_conditions/n_columns).astype(int)
+
+        max_force = (pacman_acquisition.ConditionParams.Force & self).fetch('force_max').max()
+
+        _, axs = plt.subplots(n_rows, n_columns, figsize=(12,8))
+        for idx, key in zip(np.ndindex((n_rows, n_columns)), condition_keys):
+
+            t = next(iter((pacman_acquisition.Behavior.Condition & key).fetch('condition_time'))) #//TODO separate by session??
+            trial_forces = (self & key).fetch('force_filt')
+
+            axs[idx].plot(t, np.stack(trial_forces).T, 'k');
+            axs[idx].set_ylim([0, 1.25*max_force])
+            axs[idx].set_title('condition {}'.format(key['condition_id']))
+
 
 @schema
-class MotorUnitSpikes(dj.Computed):
+class MotorUnitPsth(dj.Computed):
     definition = """
-    # Aligned motor unit trial spikes
+    # Peri-stimulus time histogram
+    -> processing.MotorUnit
+    -> BehaviorBlock
+    -> FilterParams
+    ---
+    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
+    """
+
+    key_source = (processing.MotorUnit * BehaviorBlock * FilterParams) \
+        & (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # fetch spike rasters (ephys time base)
+        spike_rasters = (MotorUnitSpikeRaster & key).fetch('motor_unit_spike_raster')
+
+        if np.stack(spike_rasters).any():
+
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike rasters to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
+            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
+
+            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
+            for rast, b in zip(spike_rasters, spike_bins):
+                rast[b] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike rasters
+            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
+
+            # trial average
+            psth = np.stack(rate).mean(axis=0)
+
+        else:
+            psth = np.zeros(len(t_beh))
+
+        # insert motor unit PSTH
+        self.insert1(dict(**key, motor_unit_psth=psth))
+
+
+@schema
+class NeuronPsth(dj.Computed):
+    definition = """
+    # Peri-stimulus time histogram
+    -> processing.Neuron
+    -> BehaviorBlock
+    -> FilterParams
+    ---
+    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
+    """
+
+    key_source = (processing.Neuron * BehaviorBlock * FilterParams) \
+        & (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # fetch spike rasters (ephys time base)
+        spike_rasters = (NeuronSpikeRaster & key).fetch('neuron_spike_raster')
+
+        if np.stack(spike_rasters).any():
+
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike rasters to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
+            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
+
+            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
+            for rast, b in zip(spike_rasters, spike_bins):
+                rast[b] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike rasters
+            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
+
+            # trial average
+            psth = np.stack(rate).mean(axis=0)
+
+        else:
+            psth = np.zeros(len(t_beh))
+
+        # insert neuron PSTH
+        self.insert1(dict(**key, neuron_psth=psth))
+
+
+@schema
+class MotorUnitSpikeRaster(dj.Computed):
+    definition = """
+    # Aligned motor unit single-trial spike raster
     -> processing.MotorUnit
     -> TrialAlignment
     ---
-    motor_unit_spikes: longblob # motor unit trial-aligned spike raster (boolean array)
+    motor_unit_spike_raster: longblob # motor unit trial-aligned spike raster (boolean array)
     """
+
+    key_source = processing.MotorUnit * (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch ephys alignment indices for the current trial
+        ephys_alignment = (TrialAlignment & key).fetch1('ephys_alignment')
+
+        # create spike bin edges centered around ephys alignment indices
+        spike_bin_edges = np.append(ephys_alignment, ephys_alignment[-1]+1+np.arange(2)).astype(float)
+        spike_bin_edges -= 0.5
+
+        # fetch raw spike indices for the full recording
+        motor_unit_spike_indices = (processing.MotorUnit & key).fetch1('motor_unit_spike_indices')
+
+        # assign spike indices to bins
+        spike_bins = np.digitize(motor_unit_spike_indices, spike_bin_edges) - 1
+
+        # remove spike bins outside trial bounds
+        spike_bins = spike_bins[(spike_bins >= 0) & (spike_bins < len(ephys_alignment))]
+
+        # create trial spike raster
+        spike_raster = np.zeros(len(ephys_alignment), dtype=bool)
+        spike_raster[spike_bins] = 1
+
+        # insert spike raster
+        self.insert1(dict(**key, motor_unit_spike_raster=spike_raster))
 
 
 @schema
-class NeuronSpikes(dj.Computed):
+class NeuronSpikeRaster(dj.Computed):
     definition = """
-    # Aligned neuron trial spikes
+    # Aligned neuron single-trial spike raster
     -> processing.Neuron
     -> TrialAlignment
     ---
-    neuron_spikes: longblob # neuron trial-aligned spike raster (boolean array)
+    neuron_spike_raster: longblob # neuron trial-aligned spike raster (boolean array)
     """
+
+    key_source = processing.Neuron * (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch ephys alignment indices for the current trial
+        ephys_alignment = (TrialAlignment & key).fetch1('ephys_alignment')
+
+        # create spike bin edges centered around ephys alignment indices
+        spike_bin_edges = np.append(ephys_alignment, ephys_alignment[-1]+1+np.arange(2)).astype(float)
+        spike_bin_edges -= 0.5
+
+        # fetch raw spike indices for the full recording
+        neuron_spike_indices = (processing.Neuron & key).fetch1('neuron_spike_indices')
+
+        # assign spike indices to bins
+        spike_bins = np.digitize(neuron_spike_indices, spike_bin_edges) - 1
+
+        # remove spike bins outside trial bounds
+        spike_bins = spike_bins[(spike_bins >= 0) & (spike_bins < len(ephys_alignment))]
+
+        # create trial spike raster
+        spike_raster = np.zeros(len(ephys_alignment), dtype=bool)
+        spike_raster[spike_bins] = 1
+
+        # insert spike raster
+        self.insert1(dict(**key, neuron_spike_raster=spike_raster))
 
 
 # =======
@@ -394,27 +605,171 @@ class BehaviorQuality(dj.Computed):
     mah_dist_mean:   decimal(6,4) # Mahalanobis distance relative to the trial average
     """
 
+    def make(self, key):
+
+        # get condition key and target force
+        condition_key, target_force = (pacman_acquisition.Behavior.Condition & key).fetch1('KEY', 'condition_force')
+        target_force = target_force[:,np.newaxis]
+
+        # get all filtered single-trial forces for this condition
+        force_keys, trial_forces = (Force & condition_key).fetch('KEY', 'force_filt')
+        trial_forces = np.stack(trial_forces).T
+        n_trials = trial_forces.shape[1]
+
+        # maximum absolute error relative to the target force range
+        max_error_target = np.max(abs(trial_forces - target_force) / max(2, np.ptp(target_force)), axis=0)
+
+        # compute single-trial force mean and standard deviation
+        force_mean = trial_forces.mean(axis=1, keepdims=True)
+        force_std = np.std(trial_forces, axis=1, keepdims=True)
+        force_std[force_std==0] = 1
+
+        # absolute z-scored error
+        max_err_mean = np.max(abs(trial_forces - force_mean) / force_std, axis=1)
+
+        # number of features for distance analysis
+        n_features = 3
+
+        if n_trials-1 >= n_features:
+            
+            # setup N-D PCA model
+            pca = decomposition.PCA(n_components=n_features)
+
+            # concatenate trial and target forces
+            X = np.hstack((trial_forces, target_force))
+
+            # fit and transform trial and target forces
+            X = pca.fit_transform(X.T)
+            X_trial = X[:-1,:].copy()
+            X_target = X[-1,:].copy()
+
+            # compute inverse covariance of low-D trial forces
+            Cinv = np.linalg.inv(np.cov(X_trial.T))
+
+            # compute Mahalanobis distance of transformed trial forces from their mean
+            mu = X_trial.mean(axis=0)
+            mah_dist_mean = [np.sqrt((v-mu) @ Cinv @ (v-mu).T) for v in X_trial]
+
+            # compute Mahalanobis distance of transformed trial forces from target
+            mah_dist_target = [np.sqrt((v-X_target) @ Cinv @ (v-X_target).T) for v in X_trial]
+
+        else:
+            mah_dist_mean = mah_dist_target = np.zeros(n_trials)
+
+        # update force keys with behavior quality metrics
+        behavior_quality_keys = [
+            dict(
+                **key,
+                max_err_target=err_targ,
+                max_err_mean=err_mean,
+                mah_dist_target=d_target,
+                mah_dist_mean=d_mean
+            )
+            for key, err_targ, err_mean, d_target, d_mean
+            in zip(force_keys, max_error_target, max_err_mean, mah_dist_target, mah_dist_mean)
+        ]
+
+        # insert behavior quality metrics
+        self.insert(behavior_quality_keys)
 
 @schema
 class MotorUnitRate(dj.Computed):
     definition = """
     # Aligned motor unit single-trial firing rate
-    -> MotorUnitSpikes
+    -> MotorUnitSpikeRaster
     -> FilterParams
     ---
     motor_unit_rate: longblob # motor unit trial-aligned firing rate (spikes/s)
     """
+
+    def make(self, key):
+
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # fetch spike raster (ephys time base)
+        spike_raster = (MotorUnitSpikeRaster & key).fetch1('motor_unit_spike_raster')
+
+        if any(spike_raster):
+
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike raster to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = np.digitize(t_ephys[spike_raster], time_bin_edges) - 1
+            spike_bins = spike_bins[(spike_bins >= 0) & (spike_bins < len(t_beh))]
+
+            spike_raster = np.zeros(len(t_beh), dtype=bool)
+            spike_raster[spike_bins] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike raster
+            rate = fs_beh * filter_rel().filter(spike_raster, fs_beh)
+
+        else:
+            rate = np.zeros(len(t_beh))
+
+        # insert motor unit rate
+        self.insert1(dict(**key, motor_unit_rate=rate))
     
 
 @schema
 class NeuronRate(dj.Computed):
     definition = """
     # Aligned neuron single-trial firing rate
-    -> NeuronSpikes
+    -> NeuronSpikeRaster
     -> FilterParams
     ---
     neuron_rate: longblob # neuron trial-aligned firing rate (spikes/s)
     """
+
+    def make(self, key):
+
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # fetch spike raster (ephys time base)
+        spike_raster = (NeuronSpikeRaster & key).fetch1('neuron_spike_raster')
+
+        if any(spike_raster):
+
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike raster to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = np.digitize(t_ephys[spike_raster], time_bin_edges) - 1
+            spike_bins = spike_bins[(spike_bins >= 0) & (spike_bins < len(t_beh))]
+
+            spike_raster = np.zeros(len(t_beh), dtype=bool)
+            spike_raster[spike_bins] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike raster
+            rate = fs_beh * filter_rel().filter(spike_raster, fs_beh)
+
+        else:
+            rate = np.zeros(len(t_beh))
+
+        # insert neuron rate
+        self.insert1(dict(**key, neuron_rate=rate))
 
 
 # =======
@@ -427,4 +782,15 @@ class GoodTrial(dj.Computed):
     # Trials that meet behavior quality thresholds
     -> BehaviorQuality
     """
+
+    key_source = BehaviorQuality \
+        & 'max_err_target < 1.5' \
+        & 'max_err_mean < 3' \
+        & 'mah_dist_target < 3' \
+        & 'mah_dist_mean < 3'
+
+    def make(self, key):
+
+        # insert keys that satisfy the key source criteria
+        self.insert1(key)
      
