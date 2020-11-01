@@ -394,7 +394,9 @@ class Force(dj.Computed):
 
             axs[idx].plot(t, np.stack(trial_forces).T, 'k');
             axs[idx].set_ylim([0, 1.25*max_force])
-            axs[idx].set_title('condition {}'.format(key['condition_id']))
+            axs[idx].set_title('Cond. {} (n = {})'.format(key['condition_id'], trial_forces.shape[0]))
+            axs[idx].set_xticks([])
+            axs[idx].set_yticks([])
 
 
 @schema
@@ -599,74 +601,38 @@ class BehaviorQuality(dj.Computed):
     # Behavior quality metrics
     -> Force
     ---
-    max_err_target:  decimal(6,4) # maximum (over time) absolute error, normalized by the range of the target force
-    max_err_mean:    decimal(6,4) # maximum (over time) absolute z-scored error
-    mah_dist_target: decimal(6,4) # Mahalanobis distance relative to the target force
-    mah_dist_mean:   decimal(6,4) # Mahalanobis distance relative to the trial average
+    max_err_target:  float # maximum (over time) absolute error relative to target force
+    avg_err_target:  float # average (over time) absolute error relative to target force
+    max_err_mean:    float # maximum (over time) absolute error relative to mean force
+    avg_err_mean:    float # average (over time) absolute error relative to mean force
     """
+
+    # process keys per condition
+    key_source = pacman_acquisition.Behavior.Condition & Force
 
     def make(self, key):
 
-        # get condition key and target force
-        condition_key, target_force = (pacman_acquisition.Behavior.Condition & key).fetch1('KEY', 'condition_force')
-        target_force = target_force[:,np.newaxis]
+        # get target force
+        target_force = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_force')[np.newaxis,:]
 
         # get all filtered single-trial forces for this condition
-        force_keys, trial_forces = (Force & condition_key).fetch('KEY', 'force_filt')
-        trial_forces = np.stack(trial_forces).T
-        n_trials = trial_forces.shape[1]
+        force_keys, trial_forces = (Force & key).fetch('KEY', 'force_filt')
+        trial_forces = np.stack(trial_forces)
 
-        # maximum absolute error relative to the target force range
-        max_error_target = np.max(abs(trial_forces - target_force) / max(2, np.ptp(target_force)), axis=0)
+        # errors relative to the target force
+        max_err_target = np.max(abs(trial_forces - target_force), axis=1)
+        avg_err_target = np.mean(abs(trial_forces - target_force), axis=1)
 
-        # compute single-trial force mean and standard deviation
-        force_mean = trial_forces.mean(axis=1, keepdims=True)
-        force_std = np.std(trial_forces, axis=1, keepdims=True)
-        force_std[force_std==0] = 1
-
-        # absolute z-scored error
-        max_err_mean = np.max(abs(trial_forces - force_mean) / force_std, axis=1)
-
-        # number of features for distance analysis
-        n_features = 3
-
-        if n_trials-1 >= n_features:
-            
-            # setup N-D PCA model
-            pca = decomposition.PCA(n_components=n_features)
-
-            # concatenate trial and target forces
-            X = np.hstack((trial_forces, target_force))
-
-            # fit and transform trial and target forces
-            X = pca.fit_transform(X.T)
-            X_trial = X[:-1,:].copy()
-            X_target = X[-1,:].copy()
-
-            # compute inverse covariance of low-D trial forces
-            Cinv = np.linalg.inv(np.cov(X_trial.T))
-
-            # compute Mahalanobis distance of transformed trial forces from their mean
-            mu = X_trial.mean(axis=0)
-            mah_dist_mean = [np.sqrt((v-mu) @ Cinv @ (v-mu).T) for v in X_trial]
-
-            # compute Mahalanobis distance of transformed trial forces from target
-            mah_dist_target = [np.sqrt((v-X_target) @ Cinv @ (v-X_target).T) for v in X_trial]
-
-        else:
-            mah_dist_mean = mah_dist_target = np.zeros(n_trials)
+        # errors relative to the mean force
+        force_mean = trial_forces.mean(axis=0, keepdims=True)
+        max_err_mean = np.max(abs(trial_forces - force_mean), axis=1)
+        avg_err_mean = np.mean(abs(trial_forces - force_mean), axis=1)
 
         # update force keys with behavior quality metrics
         behavior_quality_keys = [
-            dict(
-                **key,
-                max_err_target=err_targ,
-                max_err_mean=err_mean,
-                mah_dist_target=d_target,
-                mah_dist_mean=d_mean
-            )
-            for key, err_targ, err_mean, d_target, d_mean
-            in zip(force_keys, max_error_target, max_err_mean, mah_dist_target, mah_dist_mean)
+            dict(**key, max_err_target=a, avg_err_target=b, max_err_mean=c, avg_err_mean=d)
+            for key, a, b, c, d
+            in zip(force_keys, max_err_target, avg_err_target, max_err_mean, avg_err_mean)
         ]
 
         # insert behavior quality metrics
@@ -783,14 +749,41 @@ class GoodTrial(dj.Computed):
     -> BehaviorQuality
     """
 
-    key_source = BehaviorQuality \
-        & 'max_err_target < 1.5' \
-        & 'max_err_mean < 3' \
-        & 'mah_dist_target < 3' \
-        & 'mah_dist_mean < 3'
+    # process keys per condition
+    key_source = pacman_acquisition.Behavior.Condition & BehaviorQuality
 
     def make(self, key):
 
-        # insert keys that satisfy the key source criteria
-        self.insert1(key)
+        # z-score error metrics
+        avg_err = dj.U('condition_id').aggr(BehaviorQuality & key,\
+            avg_max_err_target='avg(max_err_target)',
+            avg_avg_err_target='avg(avg_err_target)',
+            avg_max_err_mean='avg(max_err_mean)',
+            avg_avg_err_mean='avg(avg_err_mean)')
+
+        std_err = dj.U('condition_id').aggr(BehaviorQuality & key,\
+            std_max_err_target=' std(max_err_target)',
+            std_avg_err_target=' std(avg_err_target)',
+            std_max_err_mean=' std(max_err_mean)',
+            std_avg_err_mean=' std(avg_err_mean)')
+
+        z_score_behavior_quality = ((BehaviorQuality & key) * avg_err * std_err).proj(
+            norm_max_err_target='abs((max_err_target - avg_max_err_target) / std_max_err_target)',
+            norm_avg_err_target='abs((avg_err_target - avg_avg_err_target) / std_avg_err_target)',
+            norm_max_err_mean='abs((max_err_mean - avg_max_err_mean) / std_max_err_mean)',
+            norm_avg_err_mean='abs((avg_err_mean - avg_avg_err_mean) / std_avg_err_mean)',
+        )
+
+        # fetch trial keys that are within 3 standard deviations of all error metrics
+        good_trial_keys = (BehaviorQuality & key & (
+            z_score_behavior_quality \
+                & 'norm_max_err_target < 3' 
+                & 'norm_avg_err_target < 3' 
+                & 'norm_max_err_mean < 3' 
+                & 'norm_avg_err_mean < 3'
+            )
+        ).fetch('KEY')
+
+        # insert good trial keys
+        self.insert(good_trial_keys)
      
