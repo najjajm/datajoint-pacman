@@ -400,122 +400,6 @@ class Force(dj.Computed):
 
 
 @schema
-class MotorUnitPsth(dj.Computed):
-    definition = """
-    # Peri-stimulus time histogram
-    -> processing.MotorUnit
-    -> BehaviorBlock
-    -> FilterParams
-    ---
-    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
-    """
-
-    key_source = (processing.MotorUnit * BehaviorBlock * FilterParams) \
-        & (TrialAlignment & 'valid_alignment')
-
-    def make(self, key):
-
-        # fetch behavior sample rate and time vector
-        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
-
-        # fetch spike rasters (ephys time base)
-        spike_rasters = (MotorUnitSpikeRaster & key).fetch('motor_unit_spike_raster')
-
-        if np.stack(spike_rasters).any():
-
-            # resample time to ephys time base
-            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
-                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
-
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
-
-            # rebin spike rasters to behavior time base 
-            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
-            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
-            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
-
-            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
-            for rast, b in zip(spike_rasters, spike_bins):
-                rast[b] = 1
-
-            # get filter kernel
-            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
-            filter_rel = next(part for part in filter_parts if part & key)
-
-            # filter rebinned spike rasters
-            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
-
-            # trial average
-            psth = np.stack(rate).mean(axis=0)
-
-        else:
-            psth = np.zeros(len(t_beh))
-
-        # insert motor unit PSTH
-        self.insert1(dict(**key, motor_unit_psth=psth))
-
-
-@schema
-class NeuronPsth(dj.Computed):
-    definition = """
-    # Peri-stimulus time histogram
-    -> processing.Neuron
-    -> BehaviorBlock
-    -> FilterParams
-    ---
-    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
-    """
-
-    key_source = (processing.Neuron * BehaviorBlock * FilterParams) \
-        & (TrialAlignment & 'valid_alignment')
-
-    def make(self, key):
-
-        # fetch behavior sample rate and time vector
-        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
-
-        # fetch spike rasters (ephys time base)
-        spike_rasters = (NeuronSpikeRaster & key).fetch('neuron_spike_raster')
-
-        if np.stack(spike_rasters).any():
-
-            # resample time to ephys time base
-            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
-                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
-
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
-
-            # rebin spike rasters to behavior time base 
-            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
-            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
-            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
-
-            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
-            for rast, b in zip(spike_rasters, spike_bins):
-                rast[b] = 1
-
-            # get filter kernel
-            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
-            filter_rel = next(part for part in filter_parts if part & key)
-
-            # filter rebinned spike rasters
-            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
-
-            # trial average
-            psth = np.stack(rate).mean(axis=0)
-
-        else:
-            psth = np.zeros(len(t_beh))
-
-        # insert neuron PSTH
-        self.insert1(dict(**key, neuron_psth=psth))
-
-
-@schema
 class MotorUnitSpikeRaster(dj.Computed):
     definition = """
     # Aligned motor unit single-trial spike raster
@@ -596,15 +480,11 @@ class NeuronSpikeRaster(dj.Computed):
 # =======
     
 @schema 
-class BehaviorQuality(dj.Computed):
+class GoodTrial(dj.Computed):
     definition = """
-    # Behavior quality metrics
+    # Trials that meet behavior quality thresholds
     -> Force
-    ---
-    max_err_target:  float # maximum (over time) absolute error relative to target force
-    avg_err_target:  float # average (over time) absolute error relative to target force
-    max_err_mean:    float # maximum (over time) absolute error relative to mean force
-    avg_err_mean:    float # average (over time) absolute error relative to mean force
+    -> AlignmentParams
     """
 
     # process keys per condition
@@ -612,31 +492,49 @@ class BehaviorQuality(dj.Computed):
 
     def make(self, key):
 
-        # get target force
-        target_force = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_force')[np.newaxis,:]
-
-        # get all filtered single-trial forces for this condition
+        # get force keys and single-trial filtered forces
         force_keys, trial_forces = (Force & key).fetch('KEY', 'force_filt')
         trial_forces = np.stack(trial_forces)
 
-        # errors relative to the target force
-        max_err_target = np.max(abs(trial_forces - target_force), axis=1)
-        avg_err_target = np.mean(abs(trial_forces - target_force), axis=1)
+        # get target force profile
+        target_force = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_force')
 
-        # errors relative to the mean force
-        force_mean = trial_forces.mean(axis=0, keepdims=True)
-        max_err_mean = np.max(abs(trial_forces - force_mean), axis=1)
-        avg_err_mean = np.mean(abs(trial_forces - force_mean), axis=1)
+        # compute maximum shift in samples
+        fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        max_lag_sec = (AlignmentParams & key).fetch1('alignment_max_lag')
+        max_lag_samp = int(round(fs * max_lag_sec))
 
-        # update force keys with behavior quality metrics
-        behavior_quality_keys = [
-            dict(**key, max_err_target=a, avg_err_target=b, max_err_mean=c, avg_err_mean=d)
-            for key, a, b, c, d
-            in zip(force_keys, max_err_target, avg_err_target, max_err_mean, avg_err_mean)
-        ]
+        # compute error tolerance for the condition (range of target force values within lag window)
+        n_samples = len(target_force)
+        err_tol = np.zeros(n_samples)
 
-        # insert behavior quality metrics
-        self.insert(behavior_quality_keys)
+        for idx in range(n_samples):
+
+            start_idx = max(0, idx-max_lag_samp)
+            stop_idx = min(n_samples-1, idx+max_lag_samp)+1
+            err_tol[idx] = target_force[start_idx:stop_idx].ptp()
+
+        # bound error tolerance
+        err_tol = np.maximum(2, 0.5*err_tol)
+
+        # construct upper/lower bounds for trial forces
+        mean_force = trial_forces.mean(axis=0)
+        upper_bound = np.maximum(mean_force, target_force) + err_tol
+        lower_bound = np.minimum(mean_force, target_force) - err_tol
+
+        # identify good trials whose force values remain within bounds for at least 97% of the condition duration
+        good_trials = np.mean((trial_forces < upper_bound) & (trial_forces > lower_bound), axis=1) > 0.97
+
+        # remove any remaining extreme outliers (trials with momentary force values exceeding 3.5 x standard deviation)
+        std_force = trial_forces.std(axis=0)
+        good_trials = good_trials & np.all((trial_forces < (mean_force + 3.5*std_force)) & (trial_forces > (mean_force - 3.5*std_force)), axis=1)
+
+        # filter force keys by good trials
+        force_keys = [key for idx, key in enumerate(force_keys) if good_trials[idx]]
+
+        # insert good trials
+        self.insert(force_keys)
+
 
 @schema
 class MotorUnitRate(dj.Computed):
@@ -742,48 +640,129 @@ class NeuronRate(dj.Computed):
 # LEVEL 4
 # =======
 
-@schema 
-class GoodTrial(dj.Computed):
+@schema
+class MotorUnitPsth(dj.Computed):
     definition = """
-    # Trials that meet behavior quality thresholds
-    -> BehaviorQuality
+    # Peri-stimulus time histogram
+    -> processing.MotorUnit
+    -> BehaviorBlock
+    -> FilterParams
+    ---
+    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
     """
 
-    # process keys per condition
-    key_source = pacman_acquisition.Behavior.Condition & BehaviorQuality
+    key_source = (processing.MotorUnit * BehaviorBlock * FilterParams) \
+        & (TrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
-        # z-score error metrics
-        avg_err = dj.U('condition_id').aggr(BehaviorQuality & key,\
-            avg_max_err_target='avg(max_err_target)',
-            avg_avg_err_target='avg(avg_err_target)',
-            avg_max_err_mean='avg(max_err_mean)',
-            avg_avg_err_mean='avg(avg_err_mean)')
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
 
-        std_err = dj.U('condition_id').aggr(BehaviorQuality & key,\
-            std_max_err_target=' std(max_err_target)',
-            std_avg_err_target=' std(avg_err_target)',
-            std_max_err_mean=' std(max_err_mean)',
-            std_avg_err_mean=' std(avg_err_mean)')
+        # select good trials with valid alignments within the current behavior block
+        trial_rel = pacman_acquisition.Behavior.Trial \
+            & GoodTrial \
+            & (TrialAlignment & 'valid_alignment') \
+            & (BehaviorBlock.SaveTag & key)
 
-        z_score_behavior_quality = ((BehaviorQuality & key) * avg_err * std_err).proj(
-            norm_max_err_target='abs((max_err_target - avg_max_err_target) / std_max_err_target)',
-            norm_avg_err_target='abs((avg_err_target - avg_avg_err_target) / std_avg_err_target)',
-            norm_max_err_mean='abs((max_err_mean - avg_max_err_mean) / std_max_err_mean)',
-            norm_avg_err_mean='abs((avg_err_mean - avg_avg_err_mean) / std_avg_err_mean)',
-        )
+        # fetch spike rasters (ephys time base)
+        spike_rasters = (MotorUnitSpikeRaster & trial_rel).fetch('motor_unit_spike_raster')
 
-        # fetch trial keys that are within 3 standard deviations of all error metrics
-        good_trial_keys = (BehaviorQuality & key & (
-            z_score_behavior_quality \
-                & 'norm_max_err_target < 3' 
-                & 'norm_avg_err_target < 3' 
-                & 'norm_max_err_mean < 3' 
-                & 'norm_avg_err_mean < 3'
-            )
-        ).fetch('KEY')
+        if np.stack(spike_rasters).any():
 
-        # insert good trial keys
-        self.insert(good_trial_keys)
-     
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike rasters to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
+            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
+
+            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
+            for rast, b in zip(spike_rasters, spike_bins):
+                rast[b] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike rasters
+            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
+
+            # trial average
+            psth = np.stack(rate).mean(axis=0)
+
+        else:
+            psth = np.zeros(len(t_beh))
+
+        # insert motor unit PSTH
+        self.insert1(dict(**key, motor_unit_psth=psth))
+
+
+@schema
+class NeuronPsth(dj.Computed):
+    definition = """
+    # Peri-stimulus time histogram
+    -> processing.Neuron
+    -> BehaviorBlock
+    -> FilterParams
+    ---
+    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
+    """
+
+    key_source = (processing.Neuron * BehaviorBlock * FilterParams) \
+        & (TrialAlignment & 'valid_alignment')
+
+    def make(self, key):
+
+        # fetch behavior sample rate and time vector
+        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # select good trials with valid alignments within the current behavior block
+        trial_rel = pacman_acquisition.Behavior.Trial \
+            & GoodTrial \
+            & (TrialAlignment & 'valid_alignment') \
+            & (BehaviorBlock.SaveTag & key)
+
+        # fetch spike rasters (ephys time base)
+        spike_rasters = (NeuronSpikeRaster & trial_rel).fetch('neuron_spike_raster')
+
+        if np.stack(spike_rasters).any():
+
+            # resample time to ephys time base
+            pre_pad_dur = (pacman_acquisition.ConditionParams.Target \
+                & (pacman_acquisition.Behavior.Trial & key)).fetch1('target_pad_pre')
+
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            t_ephys = (1 - round(fs_ephys * pre_pad_dur) + np.arange(round(fs_ephys/fs_beh) * len(t_beh)))/fs_ephys
+
+            # rebin spike rasters to behavior time base 
+            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+            spike_bins = [np.digitize(t_ephys[rast], time_bin_edges) - 1 for rast in spike_rasters]
+            spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
+
+            spike_rasters = [np.zeros(len(t_beh), dtype=bool) for i in range(len(spike_rasters))]
+            for rast, b in zip(spike_rasters, spike_bins):
+                rast[b] = 1
+
+            # get filter kernel
+            filter_parts = dju.getparts(processing.Filter, context=inspect.currentframe())
+            filter_rel = next(part for part in filter_parts if part & key)
+
+            # filter rebinned spike rasters
+            rate = [fs_beh * filter_rel().filter(rast, fs_beh) for rast in spike_rasters]
+
+            # trial average
+            psth = np.stack(rate).mean(axis=0)
+
+        else:
+            psth = np.zeros(len(t_beh))
+
+        # insert neuron PSTH
+        self.insert1(dict(**key, neuron_psth=psth))
