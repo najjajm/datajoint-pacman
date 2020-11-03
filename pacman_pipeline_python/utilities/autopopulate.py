@@ -7,7 +7,7 @@ import numpy as np
 import neo
 import progressbar
 from churchland_pipeline_python import acquisition, action, equipment, lab, processing, reference
-from churchland_pipeline_python.utilities import datajointutils as dju
+from churchland_pipeline_python.utilities import datajointutils as datajointutils
 from pacman_pipeline_python import pacman_acquisition, pacman_processing
 from . import datasynthesis
 from datetime import datetime
@@ -28,7 +28,7 @@ def session(
     ) -> None:
 
         # input keys
-        user_key =   (lab.User & [{'user_uni': uni} for uni in users]).fetch('KEY')
+        user_keys =   (lab.User & [{'user_uni': uni} for uni in users]).fetch('KEY')
         monkey_key = (lab.Monkey & {'monkey': monkey}).fetch1('KEY')
         rig_key =    (lab.Rig & {'rig': 'Jumanji'}).fetch1('KEY')
         task_key =   (acquisition.Task & {'task': 'pacman', 'task_version': task_version}).fetch1('KEY')
@@ -48,7 +48,7 @@ def session(
             session_path = os.path.sep.join([raw_path, date, ''])
             session_files = os.listdir(session_path)
 
-            # ensure behavior directory exists
+            # check if behavior directory exists
             try:
                 if 'Speedgoat' in hardware:
                     behavior_dir = 'speedgoat'
@@ -57,54 +57,63 @@ def session(
 
             except StopIteration:
                 print('Missing behavior files for session {}'.format(date))
+                has_behavior = False
 
-            else:         
-                # ensure ephys directory exists
+            else:
+                has_behavior = True
+
+            # check if ephys directory exists
+            try:
+                if 'Cerebus' in hardware:
+                    ephys_dir = 'blackrock'
+
+                elif 'IMEC' in hardware:
+                    ephys_dir = 'imec'
+
+                next(filter(lambda x: x==ephys_dir, session_files))
+
+            except StopIteration:
+                print('Missing ephys files for session {}'.format(date))
+                has_ephys = False
+                
+            else:
+                has_ephys = True
+
+            # insert session if ephys or behavioral data
+            if has_behavior or has_ephys:
+            
+                # session key
+                session_key = dict(session_date=date, **monkey_key)
+                
+                # insert session
+                acquisition.Session.insert1(dict(**session_key, **rig_key, **task_key))
+
+                # insert users
+                for user_key in user_keys:
+                    acquisition.Session.User.insert1(dict(**session_key, **user_key))
+
+                # insert notes
                 try:
-                    if 'Cerebus' in hardware:
-                        ephys_dir = 'blackrock'
-
-                    elif 'IMEC' in hardware:
-                        ephys_dir = 'imec'
-
-                    next(filter(lambda x: x==ephys_dir, session_files))
-
+                    notes_files = next(x for x in session_files if re.search('.*notes\.txt',x))
                 except StopIteration:
-                    print('Missing ephys files for session {}'.format(date))
-                    
+                    print('Missing notes for session {}'.format(date))
                 else:
-                    # session key
-                    session_key = dict(session_date=date, **monkey_key)
-                    
-                    # insert session
-                    acquisition.Session.insert1(dict(**session_key, **rig_key, **task_key))
+                    with open(session_path + notes_files,'r') as f:
+                        acquisition.Session.Notes.insert1(dict(**session_key, session_notes_id=0, session_notes=f.read()))
 
-                    # insert users
-                    for user in user_key:
-                        acquisition.Session.User.insert1(dict(**session_key, **user))
+                # insert hardware
+                for hardware_name in hardware:
+                    acquisition.Session.Hardware.insert1(dict(
+                        **session_key, 
+                        **(equipment.Hardware & {'hardware': hardware_name}).fetch1('KEY')
+                    ))
 
-                    # insert notes
-                    try:
-                        notes_files = next(x for x in session_files if re.search('.*notes\.txt',x))
-                    except StopIteration:
-                        print('Missing notes for session {}'.format(date))
-                    else:
-                        with open(session_path + notes_files,'r') as f:
-                            acquisition.Session.Notes.insert1(dict(**session_key, session_notes_id=0, session_notes=f.read()))
-
-                    # insert hardware
-                    for hardware_name in hardware:
-                        acquisition.Session.Hardware.insert1(dict(
-                            **session_key, 
-                            **(equipment.Hardware & {'hardware': hardware_name}).fetch1('KEY')
-                        ))
-
-                    # insert software
-                    for software_name in software:
-                        acquisition.Session.Software.insert1(dict(
-                            **session_key, 
-                            **(equipment.Software & {'software': software_name}).fetch1('KEY')
-                        ))
+                # insert software
+                for software_name in software:
+                    acquisition.Session.Software.insert1(dict(
+                        **session_key, 
+                        **(equipment.Software & {'software': software_name}).fetch1('KEY')
+                    ))
 
 
 # ==================
@@ -113,24 +122,36 @@ def session(
 
 def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True):
 
+    # function to get path to behavior files
+    def getbehaviorpath(session_key):
+
+        # path to raw data
+        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+
+        # directory name
+        if (acquisition.Session.Hardware & session_key & {'hardware': 'Speedgoat'}):
+
+            behavior_path = raw_path + os.path.sep.join([str(session_key['session_date']), 'speedgoat', ''])
+
+        # ensure remote
+        behavior_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(behavior_path)
+
+        return behavior_path
+
     # remove problematic sessions and those with behavior recording entries
     key_source = acquisition.Session - 'session_problem' - acquisition.BehaviorRecording
+
+    # remove sessions without valid behavior paths
+    key_source = key_source - [key for key in key_source.fetch('KEY') if not os.path.isdir(getbehaviorpath(key))]
 
     if display_progress:
         bar = progressbar.ProgressBar(max_value=len(key_source))
         bar.update(0)
 
     for key_idx, session_key in enumerate(key_source.fetch('KEY')):
-        
-        # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
-
-        # path to behavior files
-        if (acquisition.Session.Hardware & session_key & {'hardware': 'Speedgoat'}):
-
-            behavior_path = raw_path + os.path.sep.join([str(session_key['session_date']), 'speedgoat', ''])
 
         # get behavior files
+        behavior_path = getbehaviorpath(session_key)
         behavior_files = sorted(list(os.listdir(behavior_path)))
 
         # split files by extension
@@ -162,8 +183,27 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
 
 def ephysrecording(display_progress: bool=True):
 
+    # function to get path to ephys files
+    def getephyspath(session_key):
+
+        # path to raw data
+        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+
+        # directory name
+        if (acquisition.Session.Hardware & session_key & {'hardware': 'Cerebus'}):
+
+            ephys_path = os.path.sep.join([raw_path[:-1], str(session_key['session_date']), 'blackrock', ''])
+
+        # ensure remote
+        ephys_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(ephys_path)
+
+        return ephys_path
+
     # remove problematic sessions and those with ephys recording entries
     key_source = acquisition.Session - 'session_problem' - acquisition.EphysRecording
+
+    # remove sessions without valid behavior paths
+    key_source = key_source - [key for key in key_source.fetch('KEY') if not os.path.isdir(getephyspath(key))]
 
     if display_progress:
         bar = progressbar.ProgressBar(max_value=len(key_source))
@@ -179,19 +219,16 @@ def ephysrecording(display_progress: bool=True):
             '(emg|neu|neu_emg)',
             '\d{3}\.ns\d'
             ])
-        
-        # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
 
         if (acquisition.Session.Hardware & session_key & {'hardware': 'Cerebus'}):
 
-            # path to blackrock files
-            blackrock_path = os.path.sep.join([raw_path[:-1], str(session_key['session_date']), 'blackrock', ''])
-            blackrock_files = list(os.listdir(blackrock_path))
+            # get blackrock files
+            ephys_path = getephyspath(session_key)
+            blackrock_files = list(os.listdir(ephys_path))
 
             # recording key
             ephys_recording_key = dict(**session_key,
-                ephys_recording_path=(reference.EngramTier & {'engram_tier':'locker'}).ensureremote(blackrock_path), 
+                ephys_recording_path=ephys_path, 
                 ephys_recording_duration=0)
 
             # NSx files
@@ -213,7 +250,7 @@ def ephysrecording(display_progress: bool=True):
                 ))
 
                 # read NSx file
-                reader = neo.rawio.BlackrockRawIO(blackrock_path + file_name)
+                reader = neo.rawio.BlackrockRawIO(ephys_path + file_name)
                 reader.parse_header()
 
                 # pull sample rate and update recording duration
@@ -397,7 +434,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
     processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(dju.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
 
     # path to spike sorter file
     if software_key['software'] == 'Kilosort':
@@ -453,7 +490,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         brain_sort_key.update(**software_key, brain_sort_path=brain_sort_path)
 
         # increment sort ID number
-        brain_sort_id = dju.nextuniqueint(processing.BrainSort, 'brain_sort_id', brain_sort_key)
+        brain_sort_id = datajointutils.nextuniqueint(processing.BrainSort, 'brain_sort_id', brain_sort_key)
         brain_sort_key.update(brain_sort_id=brain_sort_id)
 
         # insert brain sort
@@ -476,7 +513,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(dju.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
 
     # path to spike sorter file
     if software_key['software'] == 'Myosort':
@@ -532,7 +569,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
         emg_sort_key.update(**software_key, emg_sort_path=emg_sort_path)
 
         # increment sort ID number
-        emg_sort_id = dju.nextuniqueint(processing.EmgSort, 'emg_sort_id', emg_sort_key)
+        emg_sort_id = datajointutils.nextuniqueint(processing.EmgSort, 'emg_sort_id', emg_sort_key)
         emg_sort_key.update(emg_sort_id=emg_sort_id)
 
         # insert emg sort
@@ -555,19 +592,18 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
         acquisition.EphysRecording:             (ephysrecording,                                   {'display_progress': display_progress}),
         acquisition.BrainChannelGroup:          (brainchannelgroup,                                {'display_progress': display_progress}),
         acquisition.EmgChannelGroup:            (emgchannelgroup,                                  {'display_progress': display_progress}),
-        processing.SyncBlock:                   (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
         processing.BrainSort:                   (brainsort,                                        {'display_progress': display_progress}),
         processing.EmgSort:                     (emgsort,                                          {'display_progress': display_progress}),
         processing.Neuron:                      (processing.Neuron.populate,                       {'display_progress': display_progress}),
         processing.MotorUnit:                   (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
         pacman_acquisition.Behavior:            (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
+        processing.SyncBlock:                   (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
         pacman_processing.AlignmentParams:      (pacman_processing.AlignmentParams.populate,       {}),
         pacman_processing.EphysTrialStart:      (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
         pacman_processing.TrialAlignment:       (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
         pacman_processing.BehaviorBlock:        (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
         pacman_processing.FilterParams:         (pacman_processing.FilterParams.populate,          {}),
         pacman_processing.Force:                (pacman_processing.Force.populate,                 {'display_progress': display_progress}),
-        pacman_processing.BehaviorQuality:      (pacman_processing.BehaviorQuality.populate,       {'display_progress': display_progress}),
         pacman_processing.GoodTrial:            (pacman_processing.GoodTrial.populate,             {'display_progress': display_progress}),
         pacman_processing.NeuronSpikeRaster:    (pacman_processing.NeuronSpikeRaster.populate,     {'display_progress': display_progress}),
         pacman_processing.NeuronRate:           (pacman_processing.NeuronRate.populate,            {'display_progress': display_progress}),
