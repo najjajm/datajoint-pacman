@@ -2,7 +2,7 @@ import datajoint as dj
 import os, re, inspect
 import numpy as np
 from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
-from churchland_pipeline_python.utilities import speedgoat, datajointutils as dju
+from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_acquisition')
@@ -204,7 +204,7 @@ class ConditionParams(dj.Lookup):
     def targetforce(self, condition_id, Fs):
 
         # join condition table with part tables
-        joined_table, part_tables = dju.joinparts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
+        joined_table, part_tables = datajointutils.joinparts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
 
         # condition parameters
         cond_params = joined_table.fetch1()
@@ -343,7 +343,7 @@ class Behavior(dj.Imported):
             # fetch force data
             data_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
             data_attr = data_attr[data_type]
-            force_data = force_rel.fetch('force_max', 'force_offset', data_attr, as_dict=True)
+            force_data = force_rel.fetch('force_max', 'force_offset', data_attr, as_dict=True, order_by='trial')
 
             # sample rate
             fs = (acquisition.BehaviorRecording & self).fetch1('behavior_recording_sample_rate')
@@ -370,10 +370,10 @@ class Behavior(dj.Imported):
                     f[data_attr] = filter_rel.filter(f[data_attr], fs)
 
             # limit output to force signal
-            force = [{k:v for k,v in f.items()} for f in force_data]
+            force = np.array([f[data_attr] for f in force_data])
 
             if len(force) == 1:
-                force = force[0][data_attr]
+                force = force[0]
 
             return force            
         
