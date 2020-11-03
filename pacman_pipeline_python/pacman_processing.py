@@ -464,7 +464,7 @@ class Force(dj.Computed):
         plot_mean: bool = False,
         plot_ste: bool=False,
         plot_target: bool=False,
-        only_good_trials: bool=True,
+        trial_type: Tuple[str]='good',
         figsize: Tuple[int,int]=(12,8),
         n_rows: int=None,
         n_columns: int=None,
@@ -475,13 +475,21 @@ class Force(dj.Computed):
     ) -> None:
         """Plot force trials."""
 
-        # ensure group and stacking parameters in primary keys
+        # standardize input format
+        if isinstance(trial_type, str):
+            trial_type = (trial_type,)
+
+        # check inputs
         assert set(group_by) <= set(self.primary_key), 'Group attribute {} not in primary key'.format(group_by)
         assert set(stack_by) <= set(self.primary_key), 'Stack attribute {} not in primary key'.format(group_by)
+        assert set(trial_type) <= {'good','bad'},      'Unrecognized trial type {}'.format(trial_type)
 
-        # filter by good trials
-        if only_good_trials:
+        # filter by trial type
+        if 'good' in trial_type and not 'bad' in trial_type:
             self = self & 'good_trial'
+        
+        elif 'bad' in trial_type and not 'good' in trial_type:
+            self = self - 'good_trial'
 
         # get figure keys by non-grouping or stacking attributes
         separate_by = [attr for attr in self.primary_key if attr not in group_by + stack_by]
