@@ -466,6 +466,8 @@ class Force(dj.Computed):
         plot_target: bool=False,
         only_good_trials: bool=True,
         figsize: Tuple[int,int]=(12,8),
+        n_rows: int=None,
+        n_columns: int=None,
         y_tick_step: int=4,
         limit_figures: int=None,
         limit_subplots: int=None,
@@ -509,16 +511,29 @@ class Force(dj.Computed):
             if limit_subplots:
                 subplot_keys = subplot_keys[:min(len(subplot_keys),limit_subplots)]
 
-            # setup page
             n_subplots = len(subplot_keys)
-            n_columns = np.ceil(np.sqrt(n_subplots)).astype(int)
-            n_rows = np.ceil(n_subplots/n_columns).astype(int)
+
+            # setup page
+            if not (n_columns or n_rows):
+                n_columns = np.ceil(np.sqrt(n_subplots)).astype(int)
+                n_rows = np.ceil(n_subplots/n_columns).astype(int)
+
+            elif n_columns and not n_rows:
+                n_rows = np.ceil(n_subplots/n_columns).astype(int)
+
+            elif n_rows and not n_columns:
+                n_columns = np.ceil(n_subplots/n_rows).astype(int)
+
+            else:
+                subplot_keys = subplot_keys[:min(len(subplot_keys), n_rows*n_columns)]
 
             # create axes handles and ensure indexable
             fig, axs = plt.subplots(n_rows, n_columns, figsize=figsize, sharey=True)
 
-            if n_subplots == 1:
-                axs = np.array(axs).reshape((n_rows, n_columns))
+            if n_rows == 1 and n_columns == 1:
+                axs = np.array(axs)
+            
+            axs = axs.reshape((n_rows, n_columns))
 
             #== LOOP SUBPLOTS ==
             for idx, plot_key in zip(np.ndindex((n_rows, n_columns)), subplot_keys):
@@ -557,6 +572,7 @@ class Force(dj.Computed):
                     axs[idx].plot(t, target_force, 'c');
 
                 # format axes
+                axs[idx].set_xlim(t[[0,-1]])
                 y_lim = axs[idx].get_ylim()
                 axs[idx].set_ylim([
                     min(0, min(y_lim[0], np.floor(trial_forces.min() / y_tick_step) * y_tick_step)), 
