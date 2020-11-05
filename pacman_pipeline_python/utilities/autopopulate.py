@@ -311,6 +311,66 @@ def ephysrecording(display_progress: bool=True):
                 bar.update(1+key_idx)
 
 
+# =================
+# EPHYS STIMULATION
+# =================
+
+def ephysstimulation(display_progress: bool=True):
+
+    # remove problematic sessions and those with ephys recording entries
+    key_source = acquisition.Session - 'session_problem' - acquisition.EphysStimulation
+
+    # filter sessions by those with "Stimulating" in notes
+    key_source = key_source & [key for key in key_source.fetch('KEY') \
+        if any(['Stimulating' in note for note in (acquisition.Session.Notes & key).fetch('session_notes')])]
+
+    if display_progress:
+        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar.update(0)
+
+    # probe depth pattern
+    probe_depth_pattern = re.compile(r'probe.*?(\d+\.?\d*)\s?mm')
+
+    for key_idx, session_key in enumerate(key_source.fetch('KEY')):
+
+        # initialize ephys stimulation key
+        ephys_stimulation_key = dict(
+            **session_key,
+            ephys_stimulation_probe_id=datajointutils.nextuniqueint(acquisition.EphysStimulation, 'ephys_stimulation_probe_id', session_key)
+        )
+
+        # read stimulating record note
+        session_note = next(note for note in (acquisition.Session.Notes & session_key).fetch('session_notes') \
+            if 'Stimulating' in note)
+
+        # read electrode array model
+        electrode_array_model = None
+        if '(N|n)europixels' in session_note:
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'Neuropixels', 'electrode_array_model_version': 'nhp demo'}).fetch1('KEY')
+
+        elif re.search(r'(S|s)(-|\s)(P|p)robe', session_note):
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'S-Probe'}).fetch1('KEY')
+
+        elif re.search(r'(V|v)(-|\s)(P|p)robe', session_note):
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'V-Probe'}).fetch1('KEY')
+
+        if electrode_array_model:
+            ephys_stimulation_key.update(**(equipment.ElectrodeArray & electrode_array_model & {'electrode_array_id': 0}).fetch1('KEY'))
+
+        # read probe depth
+        if probe_depth_pattern.search(session_note):
+            ephys_stimulation_key.update(probe_depth=float(probe_depth_pattern.search(session_note).group(1)))
+
+        # insert ephys stimulation key
+        acquisition.EphysStimulation.insert1(ephys_stimulation_key)
+
+        if display_progress:
+                bar.update(1+key_idx)
+
+
 # ===================
 # BRAIN CHANNEL GROUP
 # ===================
@@ -481,7 +541,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
     sort_path = [pth for pth in sort_path if not (processing.BrainSort & {'brain_sort_path': pth[1]})]
 
     if display_progress:
-        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar = progressbar.ProgressBar(max_value=len(sort_path))
         bar.update(0)
 
     for key_idx, (brain_sort_key, brain_sort_path) in enumerate(sort_path):
@@ -560,7 +620,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     sort_path = [pth for pth in sort_path if not (processing.EmgSort & {'emg_sort_path': pth[1]})]
 
     if display_progress:
-        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar = progressbar.ProgressBar(max_value=len(sort_path))
         bar.update(0)
 
     for key_idx, (emg_sort_key, emg_sort_path) in enumerate(sort_path):
@@ -590,6 +650,7 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
     populate_functions = {
         acquisition.BehaviorRecording:          (behaviorrecording,                                {'display_progress': display_progress}),
         acquisition.EphysRecording:             (ephysrecording,                                   {'display_progress': display_progress}),
+        acquisition.EphysStimulation:           (ephysstimulation,                                   {'display_progress': display_progress}),
         acquisition.BrainChannelGroup:          (brainchannelgroup,                                {'display_progress': display_progress}),
         acquisition.EmgChannelGroup:            (emgchannelgroup,                                  {'display_progress': display_progress}),
         processing.BrainSort:                   (brainsort,                                        {'display_progress': display_progress}),
