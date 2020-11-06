@@ -8,7 +8,7 @@ import neo
 import progressbar
 from churchland_pipeline_python import acquisition, action, equipment, lab, processing, reference
 from churchland_pipeline_python.utilities import datajointutils as datajointutils
-from pacman_pipeline_python import pacman_acquisition, pacman_processing
+from pacman_pipeline_python import pacman_acquisition, pacman_processing, pacman_behavior, pacman_brain, pacman_muscle
 from . import datasynthesis
 from datetime import datetime
 from typing import List, Tuple
@@ -159,7 +159,7 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
 
         # behavior file keys
         behavior_file_keys = [
-            dict(**session_key, behavior_file_id=idx, behavior_file_prefix=x[0], behavior_file_extension=x[1]) \
+            dict(**session_key, behavior_file_id=idx, behavior_file_path='', behavior_file_name=x[0], behavior_file_extension=x[1]) \
                 for idx, x in enumerate(behavior_file_parts)
             ]
         
@@ -245,7 +245,8 @@ def ephysrecording(display_progress: bool=True):
                 ephys_file_keys.append(dict(
                     **session_key, 
                     ephys_file_id=i_file, 
-                    ephys_file_prefix=file_parts[0], 
+                    ephys_file_path='',
+                    ephys_file_name=file_parts[0], 
                     ephys_file_extension=file_parts[1]
                 ))
 
@@ -392,6 +393,11 @@ def brainchannelgroup(display_progress: bool=True):
         brain_attr, _ = datasynthesis.parsenotes(ephys_file_key, read_type=('brain'))
 
         if brain_attr:
+
+            # check for config file
+            config_rel = equipment.ElectrodeArrayConfig & brain_attr[0]
+            if config_rel and config_rel.attributes_in_restriction():
+                [attr.update(**config_rel.fetch1('KEY')) for attr in brain_attr]
 
             # insert brain channel group
             acquisition.BrainChannelGroup.insert(brain_attr)
@@ -610,6 +616,11 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     sort_path = []
     for key, pth in myosort_path:
         sort_dir = [d for d in os.listdir(pth) if re.search(emg_sort_file_regexp, d)]
+
+        # downsample to matlab export if available
+        if any(['matlab_export' in d for d in sort_dir]):
+            sort_dir = [d for d in sort_dir if 'matlab_export' in d]
+
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
@@ -648,31 +659,32 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
 
     # session descendants populate functions
     populate_functions = {
-        acquisition.BehaviorRecording:          (behaviorrecording,                                {'display_progress': display_progress}),
-        acquisition.EphysRecording:             (ephysrecording,                                   {'display_progress': display_progress}),
-        acquisition.EphysStimulation:           (ephysstimulation,                                   {'display_progress': display_progress}),
-        acquisition.BrainChannelGroup:          (brainchannelgroup,                                {'display_progress': display_progress}),
-        acquisition.EmgChannelGroup:            (emgchannelgroup,                                  {'display_progress': display_progress}),
-        processing.BrainSort:                   (brainsort,                                        {'display_progress': display_progress}),
-        processing.EmgSort:                     (emgsort,                                          {'display_progress': display_progress}),
-        processing.Neuron:                      (processing.Neuron.populate,                       {'display_progress': display_progress}),
-        processing.MotorUnit:                   (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
-        pacman_acquisition.Behavior:            (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
-        processing.SyncBlock:                   (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
-        pacman_processing.AlignmentParams:      (pacman_processing.AlignmentParams.populate,       {}),
-        pacman_processing.EphysTrialStart:      (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
-        pacman_processing.TrialAlignment:       (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
-        pacman_processing.BehaviorBlock:        (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
-        pacman_processing.FilterParams:         (pacman_processing.FilterParams.populate,          {}),
-        pacman_processing.Force:                (pacman_processing.Force.populate,                 {'display_progress': display_progress}),
-        pacman_processing.GoodTrial:            (pacman_processing.GoodTrial.populate,             {'display_progress': display_progress}),
-        pacman_processing.NeuronSpikeRaster:    (pacman_processing.NeuronSpikeRaster.populate,     {'display_progress': display_progress}),
-        pacman_processing.NeuronRate:           (pacman_processing.NeuronRate.populate,            {'display_progress': display_progress}),
-        pacman_processing.NeuronPsth:           (pacman_processing.NeuronPsth.populate,            {'display_progress': display_progress}),
-        pacman_processing.MotorUnitSpikeRaster: (pacman_processing.MotorUnitSpikeRaster.populate,  {'display_progress': display_progress}),
-        pacman_processing.MotorUnitRate:        (pacman_processing.MotorUnitRate.populate,         {'display_progress': display_progress}),
-        pacman_processing.MotorUnitPsth:        (pacman_processing.MotorUnitPsth.populate,         {'display_progress': display_progress}),
-        pacman_processing.Emg:                  (pacman_processing.Emg.populate,                   {'display_progress': display_progress})
+        acquisition.BehaviorRecording:           (behaviorrecording,                                {'display_progress': display_progress}),
+        acquisition.EphysRecording:              (ephysrecording,                                   {'display_progress': display_progress}),
+        acquisition.EphysStimulation:            (ephysstimulation,                                 {'display_progress': display_progress}),
+        acquisition.BrainChannelGroup:           (brainchannelgroup,                                {'display_progress': display_progress}),
+        acquisition.EmgChannelGroup:             (emgchannelgroup,                                  {'display_progress': display_progress}),
+        processing.BrainSort:                    (brainsort,                                        {'display_progress': display_progress}),
+        processing.EmgSort:                      (emgsort,                                          {'display_progress': display_progress}),
+        processing.Neuron:                       (processing.Neuron.populate,                       {'display_progress': display_progress}),
+        processing.MotorUnit:                    (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
+        pacman_acquisition.Behavior:             (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
+        processing.SyncBlock:                    (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
+        pacman_processing.AlignmentParams:       (pacman_processing.AlignmentParams.populate,       {}),
+        pacman_processing.BehaviorBlock:         (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
+        pacman_processing.BehaviorQualityParams: (pacman_processing.AlignmentParams.populate,       {}),
+        pacman_processing.EphysTrialStart:       (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
+        pacman_processing.FilterParams:          (pacman_processing.FilterParams.populate,          {}),
+        pacman_processing.TrialAlignment:        (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
+        pacman_processing.GoodTrial:             (pacman_processing.GoodTrial.populate,             {'display_progress': display_progress}),
+        pacman_behavior.Force:                   (pacman_behavior.Force.populate,                   {'display_progress': display_progress}),
+        pacman_brain.NeuronSpikeRaster:          (pacman_brain.NeuronSpikeRaster.populate,          {'display_progress': display_progress}),
+        pacman_brain.NeuronRate:                 (pacman_brain.NeuronRate.populate,                 {'display_progress': display_progress}),
+        pacman_brain.NeuronPsth:                 (pacman_brain.NeuronPsth.populate,                 {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitSpikeRaster:      (pacman_muscle.MotorUnitSpikeRaster.populate,      {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitRate:             (pacman_muscle.MotorUnitRate.populate,             {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitPsth:             (pacman_muscle.MotorUnitPsth.populate,             {'display_progress': display_progress}),
+        pacman_muscle.Emg:                       (pacman_muscle.Emg.populate,                       {'display_progress': display_progress})
     }
 
     for table in populate_functions.keys():
