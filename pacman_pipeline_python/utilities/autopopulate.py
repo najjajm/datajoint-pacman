@@ -672,7 +672,7 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
         processing.SyncBlock:                    (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
         pacman_processing.AlignmentParams:       (pacman_processing.AlignmentParams.populate,       {}),
         pacman_processing.BehaviorBlock:         (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
-        pacman_processing.BehaviorQualityParams: (pacman_processing.AlignmentParams.populate,       {}),
+        pacman_processing.BehaviorQualityParams: (pacman_processing.BehaviorQualityParams.populate, {}),
         pacman_processing.EphysTrialStart:       (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
         pacman_processing.FilterParams:          (pacman_processing.FilterParams.populate,          {}),
         pacman_processing.TrialAlignment:        (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
