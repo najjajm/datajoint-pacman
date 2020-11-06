@@ -62,7 +62,7 @@ class Emg(dj.Imported):
         nsx_data = next(iter(nsx_data.values()))
 
         # fetch ephys alignment indices
-        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment')
+        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment').astype(int)
 
         # extract emg signal from NSx array and apply gain
         emg_signal = chan_gain * nsx_data[ephys_alignment, chan_idx]
@@ -141,48 +141,57 @@ class MotorUnitRate(dj.Computed):
     motor_unit_rate: longblob # motor unit trial-aligned firing rate (spikes/s)
     """
 
+    # process per motor unit/condition
+    key_source = processing.MotorUnit \
+        * pacman_acquisition.Behavior.Condition \
+        * pacman_processing.FilterParams \
+        & MotorUnitSpikeRaster
+
     def make(self, key):
 
         # fetch behavior sample rate and time vector
         fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
         t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+        n_samples = len(t_beh)
 
-        # fetch spike raster (ephys time base)
-        spike_raster = (MotorUnitSpikeRaster & key).fetch1('motor_unit_spike_raster')
+        # fetch spike rasters (ephys time base)
+        spike_raster_keys = (MotorUnitSpikeRaster & key).fetch(as_dict=True)
 
-        if any(spike_raster):
+        # resample time to ephys time base
+        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+        t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+round(fs_ephys * np.ptp(t_beh)))
 
-            # resample time to ephys time base
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+round(fs_ephys * np.ptp(t_beh)))
+        # rebin spike raster to behavior time base 
+        time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
+        spike_bins = [np.digitize(t_ephys[spike_raster_key['motor_unit_spike_raster']], time_bin_edges) - 1 \
+            for spike_raster_key in spike_raster_keys]
+        spike_bins = [b[(b >= 0) & (b < len(t_beh))] for b in spike_bins]
 
-            # rebin spike raster to behavior time base 
-            time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
-            spike_bins = np.digitize(t_ephys[spike_raster], time_bin_edges) - 1
-            spike_bins = spike_bins[(spike_bins >= 0) & (spike_bins < len(t_beh))]
+        for spike_raster_key, spk_bins in zip(spike_raster_keys, spike_bins):
+            spike_raster_key['motor_unit_spike_raster'] = np.zeros(n_samples, dtype=bool)
+            spike_raster_key['motor_unit_spike_raster'][spk_bins] = 1
 
-            spike_raster = np.zeros(len(t_beh), dtype=bool)
-            spike_raster[spike_bins] = 1
+        # get filter kernel
+        filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
+        filter_parts = datajointutils.getparts(processing.Filter, context=inspect.currentframe())
+        filter_rel = next(part for part in filter_parts if part & filter_key)
 
-            # get filter kernel
-            filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
-            filter_parts = datajointutils.getparts(processing.Filter, context=inspect.currentframe())
-            filter_rel = next(part for part in filter_parts if part & filter_key)
+        # filter rebinned spike raster
+        motor_unit_rate_keys = spike_raster_keys.copy()
+        [
+            motor_unit_rate_key.update(
+                filter_params_id = key['filter_params_id'],
+                motor_unit_rate = fs_beh * filter_rel().filter(motor_unit_rate_key['motor_unit_spike_raster'], fs_beh),
+                good_trial = (pacman_processing.GoodTrial & motor_unit_rate_key).fetch1('good_trial')
+            )
+            for motor_unit_rate_key in motor_unit_rate_keys
+        ];
 
-            # filter rebinned spike raster
-            rate = fs_beh * filter_rel().filter(spike_raster, fs_beh)
+        # remove spike rasters
+        [motor_unit_rate_key.pop('motor_unit_spike_raster') for motor_unit_rate_key in motor_unit_rate_keys];
 
-        else:
-            rate = np.zeros(len(t_beh))
-
-        key.update(
-            motor_unit_rate=rate,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id'),
-            good_trial=(pacman_processing.GoodTrial & key).fetch1('good_trial')
-        )
-
-        # insert motor unit rate
-        self.insert1(key)
+        # insert motor unit rates
+        self.insert(motor_unit_rate_keys, skip_duplicates=True)
 
 
 # =======
@@ -207,7 +216,7 @@ class MotorUnitPsth(dj.Computed):
     def make(self, key):
 
         # fetch single-trial firing rates and average
-        psth = (MotorUnitRate & key).fetch('motor_unit_rate').mean(axis=0)
+        psth = (MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate').mean(axis=0)
 
         # insert motor unit PSTH
         self.insert1(dict(**key, motor_unit_psth=psth))
