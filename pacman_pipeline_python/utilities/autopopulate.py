@@ -134,7 +134,7 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
             behavior_path = raw_path + os.path.sep.join([str(session_key['session_date']), 'speedgoat', ''])
 
         # ensure remote
-        behavior_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(behavior_path)
+        behavior_path = reference.EngramTier.ensureremote(behavior_path)
 
         return behavior_path
 
@@ -195,7 +195,7 @@ def ephysrecording(display_progress: bool=True):
             ephys_path = os.path.sep.join([raw_path[:-1], str(session_key['session_date']), 'blackrock', ''])
 
         # ensure remote
-        ephys_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(ephys_path)
+        ephys_path = reference.EngramTier.ensureremote(ephys_path)
 
         return ephys_path
 
@@ -369,7 +369,8 @@ def ephysstimulation(display_progress: bool=True):
         acquisition.EphysStimulation.insert1(ephys_stimulation_key)
 
         if display_progress:
-                bar.update(1+key_idx)
+            time.sleep(0.1)
+            bar.update(1+key_idx)
 
 
 # ===================
@@ -506,11 +507,10 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
     if software_key['software'] == 'Kilosort':
 
         # remote path to kilosort files
-        engram_locker = reference.EngramTier & {'engram_tier': 'locker'}
         kilosort_path = [
             (
                 key, 
-                engram_locker.ensureremote(
+                reference.EngramTier.ensureremote(
                     processed_path + os.path.sep.join([str(key['session_date']), 'kilosort-manually-sorted', ''])
                 )
             )
@@ -540,8 +540,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    engram_rel = reference.EngramTier & {'engram_tier': 'locker'}
-    sort_path = [(pth[0], engram_rel.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensureremote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.BrainSort & {'brain_sort_path': pth[1]})]
@@ -585,11 +584,10 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     if software_key['software'] == 'Myosort':
 
         # remote path to kilosort files
-        engram_locker = reference.EngramTier & {'engram_tier': 'locker'}
         myosort_path = [
             (
                 key, 
-                engram_locker.ensureremote(
+                reference.EngramTier.ensureremote(
                     processed_path + os.path.sep.join([str(key['session_date']), 'myosort-out', ''])
                 )
             )
@@ -624,8 +622,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    engram_rel = reference.EngramTier & {'engram_tier': 'locker'}
-    sort_path = [(pth[0], engram_rel.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensureremote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.EmgSort & {'emg_sort_path': pth[1]})]
