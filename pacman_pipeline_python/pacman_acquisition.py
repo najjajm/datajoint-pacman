@@ -57,16 +57,16 @@ class ConditionParams(dj.Lookup):
         definition = """
         # CereStim parameters
         -> master
-        stim_id:         smallint unsigned # stim ID number
+        stim_id:         smallint unsigned         # stim ID number
         ---
-        stim_current:    smallint unsigned # stim current (uA)
-        stim_electrode:  smallint unsigned # stim electrode number
-        stim_polarity:   tinyint unsigned  # cathodic (0) or anodic (1) first //TODO check this
-        stim_pulses:     tinyint unsigned  # number of pulses in stim train
-        stim_width1:     smallint unsigned # first pulse duration (us)
-        stim_width2:     smallint unsigned # second pulse duration (us)
-        stim_interphase: smallint unsigned # interphase duration (us)
-        stim_frequency:  smallint unsigned # stim frequency (Hz)
+        -> equipment.ElectrodeArrayModel.Electrode # stim electrode
+        stim_current:    smallint unsigned         # stim current (uA)
+        stim_polarity:   tinyint unsigned          # cathodic (0) or anodic (1) first //TODO check this
+        stim_pulses:     tinyint unsigned          # number of pulses in stim train
+        stim_width1:     smallint unsigned         # first pulse duration (us)
+        stim_width2:     smallint unsigned         # second pulse duration (us)
+        stim_interphase: smallint unsigned         # interphase duration (us)
+        stim_frequency:  smallint unsigned         # stim frequency (Hz)
         """
 
     class Target(dj.Part):
@@ -115,7 +115,7 @@ class ConditionParams(dj.Lookup):
         """
         
     @classmethod
-    def parseparams(self, params):
+    def parseparams(self, params: dict, session_date: str=''):
         """
         Parses a dictionary constructed from a set of Speedgoat parameters (written
         on each trial) in order to extract the set of attributes associated with each
@@ -140,6 +140,23 @@ class ConditionParams(dj.Lookup):
                 for k,v in zip(params.keys(), params.values()) 
                 if prog.search(k) is not None and k != 'stimDelay'
                 }
+
+            # replace stim electrode with electrode array model electrode key
+            try:
+                ephys_stimulation_rel = acquisition.EphysStimulation & {'session_date': session_date}
+                electrode_model_key = (equipment.ElectrodeArrayModel & ephys_stimulation_rel).fetch1('KEY')
+
+            except:
+                print('Missing EphysStimulation entry for session {}'.format(session_date))
+
+            else:
+                # get electrode array model electrode key (convert index from matlab convention)
+                electrode_idx_key = {'electrode_idx': stim_attr['stim_electrode'] - 1}
+                electrode_key = (equipment.ElectrodeArrayModel.Electrode & electrode_model_key & electrode_idx_key).fetch1('KEY')
+                stim_attr.update(**electrode_key)
+
+                # remove stim electrode attribute
+                stim_attr.pop('stim_electrode')
 
             cond_rel = cond_rel * self.Stim
             
@@ -430,7 +447,7 @@ class Behavior(dj.Imported):
                         continue
 
                     # extract condition attributes from params file
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params, key['session_date'])
 
                     # aggregate condition part table parameters into a single dictionary
                     all_cond_attr = {k: v for d in list(cond_attr.values()) for k, v in d.items()}
@@ -439,13 +456,9 @@ class Behavior(dj.Imported):
                     if not(cond_rel & all_cond_attr):
 
                         # insert condition table
-                        if not(ConditionParams()):
-                            new_cond_id = 0
-                        else:
-                            all_cond_id = ConditionParams.fetch('condition_id')
-                            new_cond_id = next(i for i in range(2+max(all_cond_id)) if i not in all_cond_id)
-
+                        new_cond_id = datajointutils.nextuniqueint(ConditionParams, 'condition_id')
                         cond_key = {'condition_id': new_cond_id}
+
                         ConditionParams.insert1(cond_key)
 
                         # insert Force, Stim, and Target tables
@@ -462,13 +475,8 @@ class Behavior(dj.Imported):
 
                             if not(cond_part_rel & cond_part_attr):
 
-                                if not(cond_part_rel()):
-                                    new_cond_part_id = 0
-                                else:
-                                    all_cond_part_id = cond_part_rel.fetch(cond_part_id)
-                                    new_cond_part_id = next(i for i in range(2+max(all_cond_part_id)) if i not in all_cond_part_id)
-
-                                cond_part_attr[cond_part_id] = new_cond_part_id
+                                cond_part_attr[cond_part_id] = datajointutils.nextuniqueint(cond_part_rel, cond_part_id)
+                                
                             else:
                                 cond_part_attr[cond_part_id] = (cond_part_rel & cond_part_attr).fetch(cond_part_id, limit=1)[0]
 
@@ -498,7 +506,7 @@ class Behavior(dj.Imported):
                     if not params:
                         continue
 
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params, key['session_date'])
 
                     # read data
                     data = speedgoat.readtrialdata(data_path, success_state, fs)
