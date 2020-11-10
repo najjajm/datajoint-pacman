@@ -30,51 +30,57 @@ class Emg(dj.Imported):
     emg_signal: longblob # EMG voltage signal
     """
 
-    key_source = acquisition.EmgChannelGroup.Channel \
+    # process per channel group
+    key_source = acquisition.EmgChannelGroup \
         * pacman_processing.BehaviorBlock \
         * (pacman_processing.TrialAlignment & 'valid_alignment') \
         & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
 
     def make(self, key):
 
+        # fetch channel keys
+        channel_keys = (acquisition.EmgChannelGroup.Channel & key).fetch('KEY')
+
+        # read channel indices from keys
+        channel_indices = [chan_key['ephys_channel_idx'] for chan_key in channel_keys]
+
+        # fetch ephys alignment indices
+        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment').astype(int)
+
         # fetch local ephys recording file path
         ephys_file_path = (acquisition.EphysRecording.File & key).projfilepath().fetch1('ephys_file_path')
 
         # ensure local path
-        ephys_file_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensurelocal(ephys_file_path)
+        ephys_file_path = reference.EngramTier.ensurelocal(ephys_file_path)
 
         # read NSx file
         reader = neo.rawio.BlackrockRawIO(ephys_file_path)
         reader.parse_header()
 
-        # fetch channel ID and index
-        chan_id, chan_idx = (acquisition.EphysRecording.Channel & key).fetch1('ephys_channel_id', 'ephys_channel_idx')
-
-        # channel ID and gain
-        id_idx, gain_idx = [
-            idx for idx, name in enumerate(reader.header['signal_channels'].dtype.names) \
-            if name in ['id','gain']
-        ]
-        chan_gain = next(chan[gain_idx] for chan in reader.header['signal_channels'] if chan[id_idx]==chan_id)
-
-        # extract NSx channel data from memory map (within a nested dictionary)
-        nsx_data = next(iter(reader.nsx_datas.values()))
-        nsx_data = next(iter(nsx_data.values()))
-
-        # fetch ephys alignment indices
-        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment').astype(int)
-
-        # extract emg signal from NSx array and apply gain
-        emg_signal = chan_gain * nsx_data[ephys_alignment, chan_idx]
-
-        key.update(
-            emg_signal=emg_signal,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id'),
-            good_trial=(pacman_processing.GoodTrial & key).fetch1('good_trial')
+        # read raw signals
+        raw_signals = reader.get_analogsignal_chunk(
+            block_index=0, 
+            seg_index=0, 
+            i_start=ephys_alignment[0], 
+            i_stop=1+ephys_alignment[-1], 
+            channel_indexes=channel_indices
         )
 
-        # insert emg signal
-        self.insert1(key)
+        # rescale raw signals to float
+        emg_signals = reader.rescale_signal_raw_to_float(raw_signals, dtype='float64', channel_indexes=channel_indices)
+
+        # fetch behavior quality params ID
+        behavior_quality_params_id = (pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
+
+        # fetch good trial indicator
+        good_trial = (pacman_processing.GoodTrial & key).fetch1('good_trial')
+
+        # update key with channel data
+        keys = [dict(key, **chan_key, emg_signal=emg_signal, behavior_quality_params_id=behavior_quality_params_id, good_trial=good_trial) \
+            for chan_key, emg_signal in zip(channel_keys, emg_signals)]
+
+        # insert emg signal keys
+        self.insert(keys)
 
 
 @schema
