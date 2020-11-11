@@ -111,6 +111,7 @@ class Force(dj.Computed):
         title_text = {
             'session_date': r'Session {}',
             'condition_id': r'Condition {}',
+            'behavior_block_id': r'Block {}',
             'trial': r'Trial {}'
         }
 
