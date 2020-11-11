@@ -265,17 +265,14 @@ def ephysrecording(display_progress: bool=True):
                     if name in ['name','id']
                 ]
 
+                # insert channel header information
                 chan_attr = []
-
-                # //TODO for S-Probes, the name indicates the channel layout
-
-                # insert channel header information //TODO double check the map files use the ID and not the label
                 for j, chan in enumerate(reader.header['signal_channels']):
 
                     chan_name = chan[name_idx]
 
                     # read channel type
-                    if re.search('^(\d|elec)', chan_name):
+                    if re.search('^(?!ainp)', chan_name):
                         chan_type = 'brain'
 
                     elif re.search('ainp[1-8]$', chan_name):
@@ -286,6 +283,10 @@ def ephysrecording(display_progress: bool=True):
 
                     elif chan_name == 'ainp16':
                         chan_type = 'sync'
+
+                    else:
+                        print('Channel type {} unrecognized'.format(chan_name))
+                        return
 
                     # write channel attributes
                     chan_attr.append(dict(
