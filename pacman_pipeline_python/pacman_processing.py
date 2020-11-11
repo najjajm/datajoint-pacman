@@ -1,5 +1,5 @@
 import datajoint as dj
-import os, inspect, itertools
+import os, re, inspect, itertools
 import pandas as pd
 import numpy as np
 import neo
@@ -101,15 +101,22 @@ class BehaviorBlock(dj.Manual):
         for idx, key in behavior_block_key:
 
             # insert behavior block
-            self.insert1(dict(**key, arm_posture_id=behavior_block_df.loc[idx, 'arm_posture_id']))
+            self.insert1(dict(key, arm_posture_id=behavior_block_df.loc[idx, 'arm_posture_id']))
 
             # read save tags for block
-            save_tags = eval('[' + behavior_block_df.loc[idx,'save_tag'] + ']')
+            save_tag_str = behavior_block_df.loc[idx,'save_tag']
+
+            if re.match('\d:\d',save_tag_str):
+                save_tags = np.arange(int(save_tag_str[0]), 1+int(save_tag_str[-1]))
+
+            else:
+                save_tags = eval('[' + save_tag_str + ']')
+
+            # construct save tag keys
+            save_tag_keys = [dict(key, save_tag=tag) for tag in save_tags]
 
             # insert behavior block save tags
-            for tag in save_tags:
-                
-                self.SaveTag.insert1(dict(**key, save_tag=tag))
+            self.SaveTag.insert(save_tag_keys)
 
 
 @schema
