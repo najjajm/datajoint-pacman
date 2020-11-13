@@ -150,12 +150,14 @@ class NeuronPsth(dj.Computed):
 
     key_source = (processing.Neuron * pacman_processing.BehaviorBlock * pacman_processing.FilterParams) \
         & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag) \
-        & NeuronRate
+        & (NeuronRate & 'good_trial')
 
     def make(self, key):
 
         # fetch single-trial firing rates and average
-        psth = (NeuronRate & key & 'good_trial').fetch('neuron_rate').mean(axis=0)
+        rates = (NeuronRate & key & 'good_trial').fetch('neuron_rate')
+
+        psth = np.stack(rates).mean(axis=0)
 
         # insert motor unit PSTH
-        self.insert1(dict(**key, neuron_psth=psth))
+        self.insert1(dict(key, neuron_psth=psth))
