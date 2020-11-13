@@ -33,7 +33,7 @@ class Emg(dj.Imported):
     # process per channel group
     key_source = acquisition.EmgChannelGroup \
         * pacman_processing.BehaviorBlock \
-        * (pacman_processing.TrialAlignment & 'valid_alignment') & {'session_date': '2019-01-30'} \
+        * (pacman_processing.TrialAlignment & 'valid_alignment') \
         & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
 
     def make(self, key):
