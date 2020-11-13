@@ -33,7 +33,7 @@ class Emg(dj.Imported):
     # process per channel group
     key_source = acquisition.EmgChannelGroup \
         * pacman_processing.BehaviorBlock \
-        * (pacman_processing.TrialAlignment & 'valid_alignment') \
+        * (pacman_processing.TrialAlignment & 'valid_alignment') & {'session_date': '2019-01-30'} \
         & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
 
     def make(self, key):
@@ -57,17 +57,14 @@ class Emg(dj.Imported):
         reader = neo.rawio.BlackrockRawIO(ephys_file_path)
         reader.parse_header()
 
-        # read raw signals
-        raw_signals = reader.get_analogsignal_chunk(
+        # read raw emg signals and transpose to horizontal
+        emg_signals = reader.get_analogsignal_chunk(
             block_index=0, 
             seg_index=0, 
             i_start=ephys_alignment[0], 
             i_stop=1+ephys_alignment[-1], 
             channel_indexes=channel_indices
-        )
-
-        # rescale raw signals to float
-        emg_signals = reader.rescale_signal_raw_to_float(raw_signals, dtype='float64', channel_indexes=channel_indices)
+        ).T
 
         # fetch behavior quality params ID
         behavior_quality_params_id = (pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
@@ -222,7 +219,9 @@ class MotorUnitPsth(dj.Computed):
     def make(self, key):
 
         # fetch single-trial firing rates and average
-        psth = (MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate').mean(axis=0)
+        rates = (MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate')
+
+        psth = np.stack(rates).mean(axis=0)
 
         # insert motor unit PSTH
-        self.insert1(dict(**key, motor_unit_psth=psth))
+        self.insert1(dict(key, motor_unit_psth=psth))
