@@ -176,38 +176,38 @@ class BehaviorQualityParams(dj.Manual):
 class EphysTrialStart(dj.Imported):
     definition = """
     # Synchronizes continuous acquisition ephys data with behavior trials
+    -> processing.EphysSync
     -> pacman_acquisition.Behavior.Trial
     ---
     ephys_trial_start = null: int unsigned # sample index (ephys time base) corresponding to the trial start
     """
 
-    key_source = pacman_acquisition.Behavior.Trial & (acquisition.Session & processing.SyncBlock)
+    # process each session with sync blocks
+    key_source = processing.EphysSync & pacman_acquisition.Behavior.Trial
 
     def make(self, key):
 
-        session_key = (acquisition.Session & key).fetch1('KEY')
-
         # ephys sample rate
-        fs_ephys = (acquisition.EphysRecording & session_key).fetch1('ephys_recording_sample_rate') 
+        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate') 
 
-        # all trial keys with simulation time
-        trial_keys = (pacman_acquisition.Behavior.Trial & session_key).fetch('KEY','simulation_time',as_dict=True)
+        # fetch all trial keys with simulation time
+        trial_keys = (pacman_acquisition.Behavior.Trial & key).fetch('KEY','simulation_time',as_dict=True)
 
         # pop simulation time (Speedgoat clock) from trial key
         trial_time = [trial.pop('simulation_time',None) for trial in trial_keys]
 
         # sync block start index and encoded time stamp
-        sync_block_start, sync_block_time = (processing.SyncBlock & session_key).fetch('sync_block_start', 'sync_block_time')
+        sync_block_start, sync_block_time = (processing.EphysSync.Block & key).fetch('sync_block_start', 'sync_block_time')
 
         # get trial start index in ephys time base
         ephys_trial_start_idx = datasync.ephystrialstart(fs_ephys, trial_time, sync_block_start, sync_block_time)
 
         # legacy adjustment
-        if session_key['session_date'] <= datetime.strptime('2018-10-11','%Y-%m-%d').date():
+        if key['session_date'] <= datetime.strptime('2018-10-11','%Y-%m-%d').date():
             ephys_trial_start_idx += round(0.1 * fs_ephys)
 
         # append ephys trial start to key
-        trial_keys = [dict(**trial, ephys_trial_start=i0) for trial,i0 in zip(trial_keys,ephys_trial_start_idx)]
+        trial_keys = [dict(key, **trial_key, ephys_trial_start=i0) for trial_key, i0 in zip(trial_keys, ephys_trial_start_idx)]
 
         self.insert(trial_keys)
 
