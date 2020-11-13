@@ -667,7 +667,7 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
         processing.Neuron:                       (processing.Neuron.populate,                       {'display_progress': display_progress}),
         processing.MotorUnit:                    (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
         pacman_acquisition.Behavior:             (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
-        processing.SyncBlock:                    (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
+        processing.EphysSync:                    (processing.EphysSync.populate,                    {'display_progress': display_progress}),
         pacman_processing.AlignmentParams:       (pacman_processing.AlignmentParams.populate,       {}),
         pacman_processing.BehaviorBlock:         (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
         pacman_processing.BehaviorQualityParams: (pacman_processing.BehaviorQualityParams.populate, {}),
