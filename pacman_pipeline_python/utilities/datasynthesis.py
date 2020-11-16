@@ -3,7 +3,6 @@
 import datajoint as dj
 import os, re
 from churchland_pipeline_python import acquisition, equipment, reference
-from churchland_pipeline_python.utilities import datajointutils as dju
 from datetime import datetime
 from typing import List, Tuple
 
@@ -82,7 +81,7 @@ def parsenotes(key, read_type: Tuple[str]=('brain', 'emg')):
             brain_attr[0].update(**electrode_array)
 
         # probe depth
-        probe_depth = re.search('(depth|lowered|inserted).*?(\d+\.?\d*)\s?mm', note)
+        probe_depth = re.search(r'(depth|lowered|inserted).*?(\d+\.?\d*)\s?mm', note)
         if probe_depth:
             brain_attr[0].update(probe_depth=float(probe_depth.group(2)))
 
