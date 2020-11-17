@@ -115,7 +115,7 @@ class ConditionParams(dj.Lookup):
         """
         
     @classmethod
-    def parseparams(self, params: dict, session_date: str=''):
+    def parse_params(self, params: dict, session_date: str=''):
         """
         Parses a dictionary constructed from a set of Speedgoat parameters (written
         on each trial) in order to extract the set of attributes associated with each
@@ -218,10 +218,10 @@ class ConditionParams(dj.Lookup):
         return cond_attr, cond_rel, targ_type_rel
     
     @classmethod
-    def targetforce(self, condition_id, Fs):
+    def target_force_profile(self, condition_id, Fs):
 
         # join condition table with part tables
-        joined_table, part_tables = datajointutils.joinparts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
+        joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
 
         # condition parameters
         cond_params = joined_table.fetch1()
@@ -234,17 +234,17 @@ class ConditionParams(dj.Lookup):
             np.linspace(
                 -cond_params['target_pad_pre'], 
                 0, 
-                1+cond_params['target_pad_pre']*int(Fs)
+                1+int(round(cond_params['target_pad_pre']*Fs))
             )[:-1],
             np.linspace(
                 0, 
                 cond_params['target_duration'], 
-                1+cond_params['target_duration']*int(Fs)
+                1+int(round(cond_params['target_duration']*Fs))
             ),
             np.linspace(
                 cond_params['target_duration'], 
                 cond_params['target_duration']+cond_params['target_pad_post'], 
-                1+cond_params['target_pad_post']*int(Fs)
+                1+int(round(cond_params['target_pad_post']*Fs))
             )[1:]
         ))
 
@@ -340,7 +340,7 @@ class Behavior(dj.Imported):
         stim = null:       longblob         # TTL signal indicating the delivery of a stim pulse
         """
 
-        def processforce(self, data_type='raw', filter=True):
+        def process_force(self, data_type='raw', filter=True):
 
             # ensure one session
             session_key = (acquisition.Session & self).fetch('KEY')
@@ -405,28 +405,27 @@ class Behavior(dj.Imported):
 
             # summary file path
             summary_file_path = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'summary'})\
-                .projfilepath().fetch1('behavior_file_path')
+                .proj_file_path().fetch1('behavior_file_path')
 
             # ensure local path
-            engram_rel = (reference.EngramTier & {'engram_tier': 'locker'})
-            summary_file_path = engram_rel.ensurelocal(summary_file_path)
+            summary_file_path = reference.EngramTier.ensure_local(summary_file_path)
 
             # read summary file
-            summary = speedgoat.readtaskstates(summary_file_path)
+            summary = speedgoat.read_task_states(summary_file_path)
 
             # update task states
             TaskState.insert(summary, skip_duplicates=True)
 
             # parameter and data file paths
             params_file_paths = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'params'})\
-                .projfilepath().fetch('behavior_file_path')
+                .proj_file_path().fetch('behavior_file_path')
 
             data_file_paths = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'data'})\
-                .projfilepath().fetch('behavior_file_path')
+                .proj_file_path().fetch('behavior_file_path')
 
             # ensure local paths
-            params_file_paths = [engram_rel.ensurelocal(pth) for pth in params_file_paths]
-            data_file_paths = [engram_rel.ensurelocal(pth) for pth in data_file_paths]
+            params_file_paths = [reference.EngramTier.ensure_local(pth) for pth in params_file_paths]
+            data_file_paths = [reference.EngramTier.ensure_local(pth) for pth in data_file_paths]
 
             # populate conditions from parameter files
             for params_path in params_file_paths:
@@ -441,13 +440,13 @@ class Behavior(dj.Imported):
 
                 else:
                     # read params file
-                    params = speedgoat.readtrialparams(params_path)
+                    params = speedgoat.read_trial_params(params_path)
 
                     if not params:
                         continue
 
                     # extract condition attributes from params file
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params, key['session_date'])
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parse_params(params, key['session_date'])
 
                     # aggregate condition part table parameters into a single dictionary
                     all_cond_attr = {k: v for d in list(cond_attr.values()) for k, v in d.items()}
@@ -456,7 +455,7 @@ class Behavior(dj.Imported):
                     if not(cond_rel & all_cond_attr):
 
                         # insert condition table
-                        new_cond_id = datajointutils.nextuniqueint(ConditionParams, 'condition_id')
+                        new_cond_id = datajointutils.next_unique_int(ConditionParams, 'condition_id')
                         cond_key = {'condition_id': new_cond_id}
 
                         ConditionParams.insert1(cond_key)
@@ -475,7 +474,7 @@ class Behavior(dj.Imported):
 
                             if not(cond_part_rel & cond_part_attr):
 
-                                cond_part_attr[cond_part_id] = datajointutils.nextuniqueint(cond_part_rel, cond_part_id)
+                                cond_part_attr[cond_part_id] = datajointutils.next_unique_int(cond_part_rel, cond_part_id)
                                 
                             else:
                                 cond_part_attr[cond_part_id] = (cond_part_rel & cond_part_attr).fetch(cond_part_id, limit=1)[0]
@@ -501,15 +500,15 @@ class Behavior(dj.Imported):
                     print('Missing parameters file for trial {}'.format(trial))
                 else:
                     # convert params to condition keys
-                    params = speedgoat.readtrialparams(params_path)
+                    params = speedgoat.read_trial_params(params_path)
 
                     if not params:
                         continue
 
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params, key['session_date'])
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parse_params(params, key['session_date'])
 
                     # read data
-                    data = speedgoat.readtrialdata(data_path, success_state, fs)
+                    data = speedgoat.read_trial_data(data_path, success_state, fs)
 
                     if not data:
                         continue
@@ -521,7 +520,7 @@ class Behavior(dj.Imported):
                     cond_id = (cond_rel & all_cond_attr).fetch1('condition_id')
                     cond_key = dict(**key, condition_id=cond_id)
                     if not(self.Condition & cond_key):
-                        t, force = ConditionParams.targetforce(cond_id, fs)
+                        t, force = ConditionParams.target_force_profile(cond_id, fs)
                         cond_key.update(condition_time=t, condition_force=force)
                         self.Condition.insert1(cond_key, allow_direct_insert=True)
 

@@ -2,13 +2,10 @@ import datajoint as dj
 import os, inspect, itertools
 import pandas as pd
 import numpy as np
-import neo
-import progressbar
 import matplotlib.pyplot as plt
-from churchland_pipeline_python import lab, acquisition, processing, equipment, reference
-from churchland_pipeline_python.utilities import datasync, datajointutils
+from churchland_pipeline_python import lab, acquisition, processing
+from churchland_pipeline_python.utilities import datajointutils
 from . import pacman_acquisition, pacman_processing
-from datetime import datetime
 from sklearn import decomposition
 from typing import List, Tuple
 
@@ -40,11 +37,11 @@ class Force(dj.Computed):
 
         # convert raw force signal to Newtons
         trial_rel = pacman_acquisition.Behavior.Trial & key
-        force = trial_rel.processforce(data_type='raw', filter=False)
+        force = trial_rel.process_force(data_type='raw', filter=False)
 
         # get filter kernel
         filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
-        filter_parts = datajointutils.getparts(processing.Filter, context=inspect.currentframe())
+        filter_parts = datajointutils.get_parts(processing.Filter, context=inspect.currentframe())
         filter_rel = next(part for part in filter_parts if part & filter_key)
 
         # apply filter

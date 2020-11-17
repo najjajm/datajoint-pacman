@@ -7,7 +7,7 @@ import numpy as np
 import neo
 import progressbar
 from churchland_pipeline_python import acquisition, action, equipment, lab, processing, reference
-from churchland_pipeline_python.utilities import datajointutils as datajointutils
+from churchland_pipeline_python.utilities import datajointutils
 from pacman_pipeline_python import pacman_acquisition, pacman_processing, pacman_behavior, pacman_brain, pacman_muscle
 from . import datasynthesis
 from datetime import datetime
@@ -34,7 +34,7 @@ def session(
         task_key =   (acquisition.Task & {'task': 'pacman', 'task_version': task_version}).fetch1('KEY')
 
         # get session dates and raw path
-        session_dates, raw_path = datasynthesis.getsessions(monkey)
+        session_dates, raw_path = datasynthesis.get_sessions(monkey)
         
         # restrict dates based on user input
         if dates:
@@ -126,15 +126,12 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
     def getbehaviorpath(session_key):
 
         # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+        raw_path = datasynthesis.get_data_path(session_key['monkey'])
 
         # directory name
         if (acquisition.Session.Hardware & session_key & {'hardware': 'Speedgoat'}):
 
             behavior_path = raw_path + os.path.sep.join([str(session_key['session_date']), 'speedgoat', ''])
-
-        # ensure remote
-        behavior_path = reference.EngramTier.ensureremote(behavior_path)
 
         return behavior_path
 
@@ -167,7 +164,7 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
         acquisition.BehaviorRecording.insert1(dict(
             **session_key, 
             behavior_recording_sample_rate=behavior_sample_rate,
-            behavior_recording_path=behavior_path
+            behavior_recording_path=reference.EngramTier.ensure_remote(behavior_path)
         ))
 
         # insert behavior recording files
@@ -187,15 +184,12 @@ def ephysrecording(display_progress: bool=True):
     def getephyspath(session_key):
 
         # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+        raw_path = datasynthesis.get_data_path(session_key['monkey'])
 
         # directory name
         if (acquisition.Session.Hardware & session_key & {'hardware': 'Cerebus'}):
 
             ephys_path = os.path.sep.join([raw_path[:-1], str(session_key['session_date']), 'blackrock', ''])
-
-        # ensure remote
-        ephys_path = reference.EngramTier.ensureremote(ephys_path)
 
         return ephys_path
 
@@ -228,7 +222,7 @@ def ephysrecording(display_progress: bool=True):
 
             # recording key
             ephys_recording_key = dict(**session_key,
-                ephys_recording_path=ephys_path, 
+                ephys_recording_path=reference.EngramTier.ensure_remote(ephys_path), 
                 ephys_recording_duration=0)
 
             # NSx files
@@ -338,7 +332,7 @@ def ephysstimulation(display_progress: bool=True):
         # initialize ephys stimulation key
         ephys_stimulation_key = dict(
             **session_key,
-            ephys_stimulation_probe_id=datajointutils.nextuniqueint(acquisition.EphysStimulation, 'ephys_stimulation_probe_id', session_key)
+            ephys_stimulation_probe_id=datajointutils.next_unique_int(acquisition.EphysStimulation, 'ephys_stimulation_probe_id', session_key)
         )
 
         # read stimulating record note
@@ -392,7 +386,7 @@ def brainchannelgroup(display_progress: bool=True):
     for key_idx, ephys_file_key in enumerate(key_source.fetch('KEY')):
 
         # read brain recording attributes from notes file
-        brain_attr, _ = datasynthesis.parsenotes(ephys_file_key, read_type=('brain'))
+        brain_attr, _ = datasynthesis.parse_notes(ephys_file_key, read_type=('brain'))
 
         if brain_attr:
 
@@ -448,7 +442,7 @@ def emgchannelgroup(display_progress: bool=True):
     for key_idx, ephys_file_key in enumerate(key_source.fetch('KEY')):
 
         # read emg recording attributes from notes file
-        _, emg_attr = datasynthesis.parsenotes(ephys_file_key, read_type=('emg'))
+        _, emg_attr = datasynthesis.parse_notes(ephys_file_key, read_type=('emg'))
 
         if emg_attr:
 
@@ -499,24 +493,17 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
     key_source = acquisition.BrainChannelGroup.fetch('KEY')
 
     # path to processed data
-    processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
+    processed_path = datasynthesis.get_data_path(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    _, software_key = datajointutils.match_fuzzy_key(equipment.Software, spike_sorter)
 
     # path to spike sorter file
     if software_key['software'] == 'Kilosort':
 
         # remote path to kilosort files
-        kilosort_path = [
-            (
-                key, 
-                reference.EngramTier.ensureremote(
-                    processed_path + os.path.sep.join([str(key['session_date']), 'kilosort-manually-sorted', ''])
-                )
-            )
-            for key in key_source
-        ]
+        kilosort_path = [(key, processed_path + os.path.sep.join([str(key['session_date']), 'kilosort-manually-sorted', '']))
+            for key in key_source]
 
         # remove non-existent paths
         kilosort_path = [(key, pth) for key, pth in kilosort_path if os.path.isdir(pth)]
@@ -541,7 +528,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    sort_path = [(pth[0], reference.EngramTier.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensure_remote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.BrainSort & {'brain_sort_path': pth[1]})]
@@ -556,7 +543,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         brain_sort_key.update(**software_key, brain_sort_path=brain_sort_path)
 
         # increment sort ID number
-        brain_sort_id = datajointutils.nextuniqueint(processing.BrainSort, 'brain_sort_id', brain_sort_key)
+        brain_sort_id = datajointutils.next_unique_int(processing.BrainSort, 'brain_sort_id', brain_sort_key)
         brain_sort_key.update(brain_sort_id=brain_sort_id)
 
         # insert brain sort
@@ -576,24 +563,17 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     key_source = acquisition.EmgChannelGroup.fetch('KEY')
 
     # path to processed data
-    processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
+    processed_path = datasynthesis.get_data_path(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    _, software_key = datajointutils.match_fuzzy_key(equipment.Software, spike_sorter)
 
     # path to spike sorter file
     if software_key['software'] == 'Myosort':
 
-        # remote path to kilosort files
-        myosort_path = [
-            (
-                key, 
-                reference.EngramTier.ensureremote(
-                    processed_path + os.path.sep.join([str(key['session_date']), 'myosort-out', ''])
-                )
-            )
-            for key in key_source
-        ]
+        # local path to kilosort files
+        myosort_path = [(key, processed_path + os.path.sep.join([str(key['session_date']), 'myosort-out', '']))
+            for key in key_source]
 
         # remove non-existent paths
         myosort_path = [(key, pth) for key, pth in myosort_path if os.path.isdir(pth)]
@@ -623,7 +603,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    sort_path = [(pth[0], reference.EngramTier.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensure_remote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.EmgSort & {'emg_sort_path': pth[1]})]
@@ -638,7 +618,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
         emg_sort_key.update(**software_key, emg_sort_path=emg_sort_path)
 
         # increment sort ID number
-        emg_sort_id = datajointutils.nextuniqueint(processing.EmgSort, 'emg_sort_id', emg_sort_key)
+        emg_sort_id = datajointutils.next_unique_int(processing.EmgSort, 'emg_sort_id', emg_sort_key)
         emg_sort_key.update(emg_sort_id=emg_sort_id)
 
         # insert emg sort

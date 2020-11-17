@@ -5,10 +5,9 @@ import numpy as np
 import neo
 import progressbar
 import matplotlib.pyplot as plt
-from churchland_pipeline_python import lab, acquisition, processing, equipment, reference
-from churchland_pipeline_python.utilities import datasync, datajointutils
+from churchland_pipeline_python import lab, acquisition, processing, reference
+from churchland_pipeline_python.utilities import datajointutils
 from . import pacman_acquisition, pacman_processing
-from datetime import datetime
 from sklearn import decomposition
 from typing import List, Tuple
 
@@ -48,10 +47,10 @@ class Emg(dj.Imported):
         ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment').astype(int)
 
         # fetch local ephys recording file path
-        ephys_file_path = (acquisition.EphysRecording.File & key).projfilepath().fetch1('ephys_file_path')
+        ephys_file_path = (acquisition.EphysRecording.File & key).proj_file_path().fetch1('ephys_file_path')
 
         # ensure local path
-        ephys_file_path = reference.EngramTier.ensurelocal(ephys_file_path)
+        ephys_file_path = reference.EngramTier.ensure_local(ephys_file_path)
 
         # read NSx file
         reader = neo.rawio.BlackrockRawIO(ephys_file_path)
@@ -162,7 +161,7 @@ class MotorUnitRate(dj.Computed):
 
         # resample time to ephys time base
         fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-        t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+round(fs_ephys * np.ptp(t_beh)))
+        t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+int(round(fs_ephys * np.ptp(t_beh))))
 
         # rebin spike raster to behavior time base 
         time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
@@ -176,7 +175,7 @@ class MotorUnitRate(dj.Computed):
 
         # get filter kernel
         filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
-        filter_parts = datajointutils.getparts(processing.Filter, context=inspect.currentframe())
+        filter_parts = datajointutils.get_parts(processing.Filter, context=inspect.currentframe())
         filter_rel = next(part for part in filter_parts if part & filter_key)
 
         # filter rebinned spike raster

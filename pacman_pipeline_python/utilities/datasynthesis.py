@@ -7,13 +7,13 @@ from datetime import datetime
 from typing import List, Tuple
 
 
-def getdatapath(monkey: str, data_type: str='raw') -> str:
+def get_data_path(monkey: str, data_type: str='raw') -> str:
     """Get path to raw or processed data."""
 
     assert data_type in ('raw','processed'), 'Data type {} unrecognized'.format(data_type)
 
     # get local path to locker
-    local_path = (reference.EngramTier & {'engram_tier': 'locker'}).getlocalpath()
+    local_path = (reference.EngramTier & {'engram_tier': 'locker'}).get_local_path()
 
     # get local path to raw data (rig > task > monkey)
     data_path_parts = ['Jumanji', 'pacman-task', monkey.lower(), data_type, '']
@@ -21,11 +21,11 @@ def getdatapath(monkey: str, data_type: str='raw') -> str:
     return local_path + os.path.sep.join(data_path_parts)
 
 
-def getsessions(monkey: str, data_type: str='raw') -> List[str]:
+def get_sessions(monkey: str, data_type: str='raw') -> List[str]:
     """Get list of raw or processed session dates."""
 
     # get raw directories
-    data_path = getdatapath(monkey, data_type=data_type)
+    data_path = get_data_path(monkey, data_type=data_type)
     data_dir = sorted(list(os.listdir(data_path)))
 
     # restrict to valid dates
@@ -42,7 +42,7 @@ def getsessions(monkey: str, data_type: str='raw') -> List[str]:
     return session_dates, data_path
 
 
-def parsenotes(key, read_type: Tuple[str]=('brain', 'emg')):
+def parse_notes(key, read_type: Tuple[str]=('brain', 'emg')):
     """Parses notes file to extract brain and emg channel group metadata."""
 
     brain_attr = None

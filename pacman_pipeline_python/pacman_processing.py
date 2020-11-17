@@ -5,7 +5,7 @@ import numpy as np
 import neo
 import progressbar
 import matplotlib.pyplot as plt
-from churchland_pipeline_python import lab, acquisition, processing, equipment, reference
+from churchland_pipeline_python import lab, acquisition, processing
 from churchland_pipeline_python.utilities import datasync, datajointutils
 from . import pacman_acquisition
 from datetime import datetime
@@ -164,7 +164,7 @@ class BehaviorQualityParams(dj.Manual):
             # update behavior quality params ID
             behavior_quality_params_key = dict(
                 **key,
-                behavior_quality_params_id=datajointutils.nextuniqueint(self, 'behavior_quality_params_id', key),
+                behavior_quality_params_id=datajointutils.next_unique_int(self, 'behavior_quality_params_id', key),
                 **params
             )
 
@@ -200,7 +200,7 @@ class EphysTrialStart(dj.Imported):
         sync_block_start, sync_block_time = (processing.EphysSync.Block & key).fetch('sync_block_start', 'sync_block_time')
 
         # get trial start index in ephys time base
-        ephys_trial_start_idx = datasync.ephystrialstart(fs_ephys, trial_time, sync_block_start, sync_block_time)
+        ephys_trial_start_idx = datasync.get_ephys_trial_start(fs_ephys, trial_time, sync_block_start, sync_block_time)
 
         # legacy adjustment
         if key['session_date'] <= datetime.strptime('2018-10-11','%Y-%m-%d').date():
@@ -227,12 +227,12 @@ class FilterParams(dj.Manual):
         condition_rel: pacman_acquisition.Behavior.Condition=pacman_acquisition.Behavior.Condition(), 
         filter_attr: dict={'sd':25e-3,'width':4}):
 
-        _, filter_parts = datajointutils.joinparts(processing.Filter, filter_attr)
-        filter_rel = next(x for x in filter_parts if x in datajointutils.getchildren(processing.Filter))
+        _, filter_parts = datajointutils.join_parts(processing.Filter, filter_attr)
+        filter_rel = next(x for x in filter_parts if x in datajointutils.get_children(processing.Filter))
 
         # check inputs
         assert isinstance(condition_rel, pacman_acquisition.Behavior.Condition), 'Unrecognized condition table'
-        assert filter_rel in datajointutils.getchildren(processing.Filter), 'Unrecognized filter table'
+        assert filter_rel in datajointutils.get_children(processing.Filter), 'Unrecognized filter table'
 
         # construct "key source" from join of condition and filter tables
         key_source = (condition_rel * filter_rel) - self
@@ -318,7 +318,7 @@ class TrialAlignment(dj.Computed):
             align_idx_trunc = trunc_idx - zero_idx
 
             # process force signal
-            force = trial_rel.processforce()
+            force = trial_rel.process_force()
 
             # compute normalized mean squared error for each lag
             nmse = np.full(1+2*max_lag_samp, -np.inf)
@@ -339,7 +339,7 @@ class TrialAlignment(dj.Computed):
 
             # ephys alignment indices
             fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+round(fs_ephys * np.ptp(t)))).astype(int)
+            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+int(round(fs_ephys * np.ptp(t))))).astype(int)
             ephys_alignment = t_idx_ephys + align_idx * round(fs_ephys/fs_beh)
             ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
             key.update(ephys_alignment=ephys_alignment)
@@ -377,7 +377,7 @@ class GoodTrial(dj.Computed):
         trial_rel = pacman_acquisition.Behavior.Trial & key & (TrialAlignment & 'valid_alignment')
 
         # process force signal (default filter -- 25 ms Gaussian)
-        trial_forces = trial_rel.processforce()
+        trial_forces = trial_rel.process_force()
         if len(trial_rel) == 1:
             trial_forces = [trial_forces]
 
