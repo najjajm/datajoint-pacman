@@ -86,6 +86,18 @@ class ConditionParams(dj.Lookup):
         # Static force profile parameters
         -> master.Target
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_offset,{}), char)'.format(n_sigfigs)) \
+                .proj(label='CONCAT("Static (", amp, " N)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Ramp(dj.Part):
         definition = """
@@ -94,6 +106,18 @@ class ConditionParams(dj.Lookup):
         ---
         target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_amplitude/target_duration,{}), char)'.format(n_sigfigs)) \
+                .proj(label='CONCAT("Ramp (", amp, " N/s)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Sine(dj.Part):
         definition = """
@@ -103,6 +127,21 @@ class ConditionParams(dj.Lookup):
         target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
         target_frequency: decimal(5,4) # target frequency (Hz)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='CONVERT(ROUND(target_amplitude*force_max,{}), char)'.format(n_sigfigs), 
+                    freq='CONVERT(ROUND(target_frequency,{}), char)'.format(n_sigfigs)
+                ) \
+                .proj(label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Chirp(dj.Part):
         definition = """
@@ -113,6 +152,23 @@ class ConditionParams(dj.Lookup):
         target_frequency_init:  decimal(5,4) # target initial frequency (Hz)
         target_frequency_final: decimal(5,4) # target final frequency (Hz)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='CONVERT(ROUND(force_max*target_amplitude,{}), char)'.format(n_sigfigs),
+                    freq1='CONVERT(ROUND(target_frequency_init,{}), char)'.format(n_sigfigs),
+                    freq2='CONVERT(ROUND(target_frequency_final,{}), char)'.format(n_sigfigs),
+                ) \
+                .proj(label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     @classmethod
     def parse_params(self, params: dict, session_date: str=''):
