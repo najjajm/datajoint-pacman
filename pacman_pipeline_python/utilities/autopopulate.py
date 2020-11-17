@@ -7,8 +7,8 @@ import numpy as np
 import neo
 import progressbar
 from churchland_pipeline_python import acquisition, action, equipment, lab, processing, reference
-from churchland_pipeline_python.utilities import datajointutils as datajointutils
-from pacman_pipeline_python import pacman_acquisition, pacman_processing
+from churchland_pipeline_python.utilities import datajointutils
+from pacman_pipeline_python import pacman_acquisition, pacman_processing, pacman_behavior, pacman_brain, pacman_muscle
 from . import datasynthesis
 from datetime import datetime
 from typing import List, Tuple
@@ -34,7 +34,7 @@ def session(
         task_key =   (acquisition.Task & {'task': 'pacman', 'task_version': task_version}).fetch1('KEY')
 
         # get session dates and raw path
-        session_dates, raw_path = datasynthesis.getsessions(monkey)
+        session_dates, raw_path = datasynthesis.get_sessions(monkey)
         
         # restrict dates based on user input
         if dates:
@@ -126,15 +126,12 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
     def getbehaviorpath(session_key):
 
         # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+        raw_path = datasynthesis.get_data_path(session_key['monkey'])
 
         # directory name
         if (acquisition.Session.Hardware & session_key & {'hardware': 'Speedgoat'}):
 
             behavior_path = raw_path + os.path.sep.join([str(session_key['session_date']), 'speedgoat', ''])
-
-        # ensure remote
-        behavior_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(behavior_path)
 
         return behavior_path
 
@@ -159,7 +156,7 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
 
         # behavior file keys
         behavior_file_keys = [
-            dict(**session_key, behavior_file_id=idx, behavior_file_prefix=x[0], behavior_file_extension=x[1]) \
+            dict(**session_key, behavior_file_id=idx, behavior_file_path='', behavior_file_name=x[0], behavior_file_extension=x[1]) \
                 for idx, x in enumerate(behavior_file_parts)
             ]
         
@@ -167,7 +164,7 @@ def behaviorrecording(behavior_sample_rate: int=1e3, display_progress: bool=True
         acquisition.BehaviorRecording.insert1(dict(
             **session_key, 
             behavior_recording_sample_rate=behavior_sample_rate,
-            behavior_recording_path=behavior_path
+            behavior_recording_path=reference.EngramTier.ensure_remote(behavior_path)
         ))
 
         # insert behavior recording files
@@ -187,15 +184,12 @@ def ephysrecording(display_progress: bool=True):
     def getephyspath(session_key):
 
         # path to raw data
-        raw_path = datasynthesis.getdatapath(session_key['monkey'])
+        raw_path = datasynthesis.get_data_path(session_key['monkey'])
 
         # directory name
         if (acquisition.Session.Hardware & session_key & {'hardware': 'Cerebus'}):
 
             ephys_path = os.path.sep.join([raw_path[:-1], str(session_key['session_date']), 'blackrock', ''])
-
-        # ensure remote
-        ephys_path = (reference.EngramTier & {'engram_tier': 'locker'}).ensureremote(ephys_path)
 
         return ephys_path
 
@@ -228,7 +222,7 @@ def ephysrecording(display_progress: bool=True):
 
             # recording key
             ephys_recording_key = dict(**session_key,
-                ephys_recording_path=ephys_path, 
+                ephys_recording_path=reference.EngramTier.ensure_remote(ephys_path), 
                 ephys_recording_duration=0)
 
             # NSx files
@@ -245,7 +239,8 @@ def ephysrecording(display_progress: bool=True):
                 ephys_file_keys.append(dict(
                     **session_key, 
                     ephys_file_id=i_file, 
-                    ephys_file_prefix=file_parts[0], 
+                    ephys_file_path='',
+                    ephys_file_name=file_parts[0], 
                     ephys_file_extension=file_parts[1]
                 ))
 
@@ -264,17 +259,14 @@ def ephysrecording(display_progress: bool=True):
                     if name in ['name','id']
                 ]
 
+                # insert channel header information
                 chan_attr = []
-
-                # //TODO for S-Probes, the name indicates the channel layout
-
-                # insert channel header information //TODO double check the map files use the ID and not the label
                 for j, chan in enumerate(reader.header['signal_channels']):
 
                     chan_name = chan[name_idx]
 
                     # read channel type
-                    if re.search('^(\d|elec)', chan_name):
+                    if re.search('^(?!ainp)', chan_name):
                         chan_type = 'brain'
 
                     elif re.search('ainp[1-8]$', chan_name):
@@ -285,6 +277,10 @@ def ephysrecording(display_progress: bool=True):
 
                     elif chan_name == 'ainp16':
                         chan_type = 'sync'
+
+                    else:
+                        print('Channel type {} unrecognized'.format(chan_name))
+                        return
 
                     # write channel attributes
                     chan_attr.append(dict(
@@ -311,6 +307,67 @@ def ephysrecording(display_progress: bool=True):
                 bar.update(1+key_idx)
 
 
+# =================
+# EPHYS STIMULATION
+# =================
+
+def ephysstimulation(display_progress: bool=True):
+
+    # remove problematic sessions and those with ephys recording entries
+    key_source = acquisition.Session - 'session_problem' - acquisition.EphysStimulation
+
+    # filter sessions by those with "Stimulating" in notes
+    key_source = key_source & [key for key in key_source.fetch('KEY') \
+        if any(['Stimulating' in note for note in (acquisition.Session.Notes & key).fetch('session_notes')])]
+
+    if display_progress:
+        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar.update(0)
+
+    # probe depth pattern
+    probe_depth_pattern = re.compile(r'probe.*?(\d+\.?\d*)\s?mm')
+
+    for key_idx, session_key in enumerate(key_source.fetch('KEY')):
+
+        # initialize ephys stimulation key
+        ephys_stimulation_key = dict(
+            **session_key,
+            ephys_stimulation_probe_id=datajointutils.next_unique_int(acquisition.EphysStimulation, 'ephys_stimulation_probe_id', session_key)
+        )
+
+        # read stimulating record note
+        session_note = next(note for note in (acquisition.Session.Notes & session_key).fetch('session_notes') \
+            if 'Stimulating' in note)
+
+        # read electrode array model
+        electrode_array_model = None
+        if '(N|n)europixels' in session_note:
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'Neuropixels', 'electrode_array_model_version': 'nhp demo'}).fetch1('KEY')
+
+        elif re.search(r'(S|s)(-|\s)(P|p)robe', session_note):
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'S-Probe'}).fetch1('KEY')
+
+        elif re.search(r'(V|v)(-|\s)(P|p)robe', session_note):
+            electrode_array_model = (equipment.ElectrodeArrayModel \
+                & {'electrode_array_model': 'V-Probe'}).fetch1('KEY')
+
+        if electrode_array_model:
+            ephys_stimulation_key.update(**(equipment.ElectrodeArray & electrode_array_model & {'electrode_array_id': 0}).fetch1('KEY'))
+
+        # read probe depth
+        if probe_depth_pattern.search(session_note):
+            ephys_stimulation_key.update(probe_depth=float(probe_depth_pattern.search(session_note).group(1)))
+
+        # insert ephys stimulation key
+        acquisition.EphysStimulation.insert1(ephys_stimulation_key)
+
+        if display_progress:
+            time.sleep(0.1)
+            bar.update(1+key_idx)
+
+
 # ===================
 # BRAIN CHANNEL GROUP
 # ===================
@@ -329,9 +386,14 @@ def brainchannelgroup(display_progress: bool=True):
     for key_idx, ephys_file_key in enumerate(key_source.fetch('KEY')):
 
         # read brain recording attributes from notes file
-        brain_attr, _ = datasynthesis.parsenotes(ephys_file_key, read_type=('brain'))
+        brain_attr, _ = datasynthesis.parse_notes(ephys_file_key, read_type=('brain'))
 
         if brain_attr:
+
+            # check for config file
+            config_rel = equipment.ElectrodeArrayConfig & brain_attr[0]
+            if config_rel and config_rel.attributes_in_restriction():
+                [attr.update(**config_rel.fetch1('KEY')) for attr in brain_attr]
 
             # insert brain channel group
             acquisition.BrainChannelGroup.insert(brain_attr)
@@ -380,7 +442,7 @@ def emgchannelgroup(display_progress: bool=True):
     for key_idx, ephys_file_key in enumerate(key_source.fetch('KEY')):
 
         # read emg recording attributes from notes file
-        _, emg_attr = datasynthesis.parsenotes(ephys_file_key, read_type=('emg'))
+        _, emg_attr = datasynthesis.parse_notes(ephys_file_key, read_type=('emg'))
 
         if emg_attr:
 
@@ -431,25 +493,17 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
     key_source = acquisition.BrainChannelGroup.fetch('KEY')
 
     # path to processed data
-    processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
+    processed_path = datasynthesis.get_data_path(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    _, software_key = datajointutils.match_fuzzy_key(equipment.Software, spike_sorter)
 
     # path to spike sorter file
     if software_key['software'] == 'Kilosort':
 
         # remote path to kilosort files
-        engram_locker = reference.EngramTier & {'engram_tier': 'locker'}
-        kilosort_path = [
-            (
-                key, 
-                engram_locker.ensureremote(
-                    processed_path + os.path.sep.join([str(key['session_date']), 'kilosort-manually-sorted', ''])
-                )
-            )
-            for key in key_source
-        ]
+        kilosort_path = [(key, processed_path + os.path.sep.join([str(key['session_date']), 'kilosort-manually-sorted', '']))
+            for key in key_source]
 
         # remove non-existent paths
         kilosort_path = [(key, pth) for key, pth in kilosort_path if os.path.isdir(pth)]
@@ -474,14 +528,13 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    engram_rel = reference.EngramTier & {'engram_tier': 'locker'}
-    sort_path = [(pth[0], engram_rel.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensure_remote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.BrainSort & {'brain_sort_path': pth[1]})]
 
     if display_progress:
-        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar = progressbar.ProgressBar(max_value=len(sort_path))
         bar.update(0)
 
     for key_idx, (brain_sort_key, brain_sort_path) in enumerate(sort_path):
@@ -490,7 +543,7 @@ def brainsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Kilosort','2.0'
         brain_sort_key.update(**software_key, brain_sort_path=brain_sort_path)
 
         # increment sort ID number
-        brain_sort_id = datajointutils.nextuniqueint(processing.BrainSort, 'brain_sort_id', brain_sort_key)
+        brain_sort_id = datajointutils.next_unique_int(processing.BrainSort, 'brain_sort_id', brain_sort_key)
         brain_sort_key.update(brain_sort_id=brain_sort_id)
 
         # insert brain sort
@@ -510,25 +563,17 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     key_source = acquisition.EmgChannelGroup.fetch('KEY')
 
     # path to processed data
-    processed_path = datasynthesis.getdatapath(monkey, data_type='processed')
+    processed_path = datasynthesis.get_data_path(monkey, data_type='processed')
 
     # match spike sorter input to software key
-    software_key = next(iter(datajointutils.matchfuzzykey({spike_sorter: equipment.Software}).values()))
+    _, software_key = datajointutils.match_fuzzy_key(equipment.Software, spike_sorter)
 
     # path to spike sorter file
     if software_key['software'] == 'Myosort':
 
-        # remote path to kilosort files
-        engram_locker = reference.EngramTier & {'engram_tier': 'locker'}
-        myosort_path = [
-            (
-                key, 
-                engram_locker.ensureremote(
-                    processed_path + os.path.sep.join([str(key['session_date']), 'myosort-out', ''])
-                )
-            )
-            for key in key_source
-        ]
+        # local path to kilosort files
+        myosort_path = [(key, processed_path + os.path.sep.join([str(key['session_date']), 'myosort-out', '']))
+            for key in key_source]
 
         # remove non-existent paths
         myosort_path = [(key, pth) for key, pth in myosort_path if os.path.isdir(pth)]
@@ -550,17 +595,21 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
     sort_path = []
     for key, pth in myosort_path:
         sort_dir = [d for d in os.listdir(pth) if re.search(emg_sort_file_regexp, d)]
+
+        # downsample to matlab export if available
+        if any(['matlab_export' in d for d in sort_dir]):
+            sort_dir = [d for d in sort_dir if 'matlab_export' in d]
+
         sort_path.extend([(key, pth + os.path.sep.join([d, ''])) for d in sort_dir])
 
     # ensure remote path
-    engram_rel = reference.EngramTier & {'engram_tier': 'locker'}
-    sort_path = [(pth[0], engram_rel.ensureremote(pth[1])) for pth in sort_path]
+    sort_path = [(pth[0], reference.EngramTier.ensure_remote(pth[1])) for pth in sort_path]
 
     # remove paths already in table
     sort_path = [pth for pth in sort_path if not (processing.EmgSort & {'emg_sort_path': pth[1]})]
 
     if display_progress:
-        bar = progressbar.ProgressBar(max_value=len(key_source))
+        bar = progressbar.ProgressBar(max_value=len(sort_path))
         bar.update(0)
 
     for key_idx, (emg_sort_key, emg_sort_path) in enumerate(sort_path):
@@ -569,7 +618,7 @@ def emgsort(monkey: str='Cousteau', spike_sorter: Tuple[str]=('Myosort','1.0'), 
         emg_sort_key.update(**software_key, emg_sort_path=emg_sort_path)
 
         # increment sort ID number
-        emg_sort_id = datajointutils.nextuniqueint(processing.EmgSort, 'emg_sort_id', emg_sort_key)
+        emg_sort_id = datajointutils.next_unique_int(processing.EmgSort, 'emg_sort_id', emg_sort_key)
         emg_sort_key.update(emg_sort_id=emg_sort_id)
 
         # insert emg sort
@@ -588,30 +637,32 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
 
     # session descendants populate functions
     populate_functions = {
-        acquisition.BehaviorRecording:          (behaviorrecording,                                {'display_progress': display_progress}),
-        acquisition.EphysRecording:             (ephysrecording,                                   {'display_progress': display_progress}),
-        acquisition.BrainChannelGroup:          (brainchannelgroup,                                {'display_progress': display_progress}),
-        acquisition.EmgChannelGroup:            (emgchannelgroup,                                  {'display_progress': display_progress}),
-        processing.BrainSort:                   (brainsort,                                        {'display_progress': display_progress}),
-        processing.EmgSort:                     (emgsort,                                          {'display_progress': display_progress}),
-        processing.Neuron:                      (processing.Neuron.populate,                       {'display_progress': display_progress}),
-        processing.MotorUnit:                   (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
-        pacman_acquisition.Behavior:            (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
-        processing.SyncBlock:                   (processing.SyncBlock.populate,                    {'display_progress': display_progress}),
-        pacman_processing.AlignmentParams:      (pacman_processing.AlignmentParams.populate,       {}),
-        pacman_processing.EphysTrialStart:      (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
-        pacman_processing.TrialAlignment:       (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
-        pacman_processing.BehaviorBlock:        (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
-        pacman_processing.FilterParams:         (pacman_processing.FilterParams.populate,          {}),
-        pacman_processing.Force:                (pacman_processing.Force.populate,                 {'display_progress': display_progress}),
-        pacman_processing.GoodTrial:            (pacman_processing.GoodTrial.populate,             {'display_progress': display_progress}),
-        pacman_processing.NeuronSpikeRaster:    (pacman_processing.NeuronSpikeRaster.populate,     {'display_progress': display_progress}),
-        pacman_processing.NeuronRate:           (pacman_processing.NeuronRate.populate,            {'display_progress': display_progress}),
-        pacman_processing.NeuronPsth:           (pacman_processing.NeuronPsth.populate,            {'display_progress': display_progress}),
-        pacman_processing.MotorUnitSpikeRaster: (pacman_processing.MotorUnitSpikeRaster.populate,  {'display_progress': display_progress}),
-        pacman_processing.MotorUnitRate:        (pacman_processing.MotorUnitRate.populate,         {'display_progress': display_progress}),
-        pacman_processing.MotorUnitPsth:        (pacman_processing.MotorUnitPsth.populate,         {'display_progress': display_progress}),
-        pacman_processing.Emg:                  (pacman_processing.Emg.populate,                   {'display_progress': display_progress})
+        acquisition.BehaviorRecording:           (behaviorrecording,                                {'display_progress': display_progress}),
+        acquisition.EphysRecording:              (ephysrecording,                                   {'display_progress': display_progress}),
+        acquisition.EphysStimulation:            (ephysstimulation,                                 {'display_progress': display_progress}),
+        acquisition.BrainChannelGroup:           (brainchannelgroup,                                {'display_progress': display_progress}),
+        acquisition.EmgChannelGroup:             (emgchannelgroup,                                  {'display_progress': display_progress}),
+        processing.BrainSort:                    (brainsort,                                        {'display_progress': display_progress}),
+        processing.EmgSort:                      (emgsort,                                          {'display_progress': display_progress}),
+        processing.Neuron:                       (processing.Neuron.populate,                       {'display_progress': display_progress}),
+        processing.MotorUnit:                    (processing.MotorUnit.populate,                    {'display_progress': display_progress}),
+        pacman_acquisition.Behavior:             (pacman_acquisition.Behavior.populate,             {'display_progress': display_progress}),
+        processing.EphysSync:                    (processing.EphysSync.populate,                    {'display_progress': display_progress}),
+        pacman_processing.AlignmentParams:       (pacman_processing.AlignmentParams.populate,       {}),
+        pacman_processing.BehaviorBlock:         (pacman_processing.BehaviorBlock.insert_from_file, {'monkey': monkey}),
+        pacman_processing.BehaviorQualityParams: (pacman_processing.BehaviorQualityParams.populate, {}),
+        pacman_processing.EphysTrialStart:       (pacman_processing.EphysTrialStart.populate,       {'display_progress': display_progress}),
+        pacman_processing.FilterParams:          (pacman_processing.FilterParams.populate,          {}),
+        pacman_processing.TrialAlignment:        (pacman_processing.TrialAlignment.populate,        {'display_progress': display_progress}),
+        pacman_processing.GoodTrial:             (pacman_processing.GoodTrial.populate,             {'display_progress': display_progress}),
+        pacman_behavior.Force:                   (pacman_behavior.Force.populate,                   {'display_progress': display_progress}),
+        pacman_brain.NeuronSpikeRaster:          (pacman_brain.NeuronSpikeRaster.populate,          {'display_progress': display_progress}),
+        pacman_brain.NeuronRate:                 (pacman_brain.NeuronRate.populate,                 {'display_progress': display_progress}),
+        pacman_brain.NeuronPsth:                 (pacman_brain.NeuronPsth.populate,                 {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitSpikeRaster:      (pacman_muscle.MotorUnitSpikeRaster.populate,      {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitRate:             (pacman_muscle.MotorUnitRate.populate,             {'display_progress': display_progress}),
+        pacman_muscle.MotorUnitPsth:             (pacman_muscle.MotorUnitPsth.populate,             {'display_progress': display_progress}),
+        pacman_muscle.Emg:                       (pacman_muscle.Emg.populate,                       {'display_progress': display_progress})
     }
 
     for table in populate_functions.keys():

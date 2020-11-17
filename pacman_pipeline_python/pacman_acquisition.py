@@ -57,16 +57,16 @@ class ConditionParams(dj.Lookup):
         definition = """
         # CereStim parameters
         -> master
-        stim_id:         smallint unsigned # stim ID number
+        stim_id:         smallint unsigned         # stim ID number
         ---
-        stim_current:    smallint unsigned # stim current (uA)
-        stim_electrode:  smallint unsigned # stim electrode number
-        stim_polarity:   tinyint unsigned  # cathodic (0) or anodic (1) first //TODO check this
-        stim_pulses:     tinyint unsigned  # number of pulses in stim train
-        stim_width1:     smallint unsigned # first pulse duration (us)
-        stim_width2:     smallint unsigned # second pulse duration (us)
-        stim_interphase: smallint unsigned # interphase duration (us)
-        stim_frequency:  smallint unsigned # stim frequency (Hz)
+        -> equipment.ElectrodeArrayModel.Electrode # stim electrode
+        stim_current:    smallint unsigned         # stim current (uA)
+        stim_polarity:   tinyint unsigned          # cathodic (0) or anodic (1) first //TODO check this
+        stim_pulses:     tinyint unsigned          # number of pulses in stim train
+        stim_width1:     smallint unsigned         # first pulse duration (us)
+        stim_width2:     smallint unsigned         # second pulse duration (us)
+        stim_interphase: smallint unsigned         # interphase duration (us)
+        stim_frequency:  smallint unsigned         # stim frequency (Hz)
         """
 
     class Target(dj.Part):
@@ -86,6 +86,18 @@ class ConditionParams(dj.Lookup):
         # Static force profile parameters
         -> master.Target
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_offset,{}), char)'.format(n_sigfigs)) \
+                .proj(label='CONCAT("Static (", amp, " N)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Ramp(dj.Part):
         definition = """
@@ -94,6 +106,18 @@ class ConditionParams(dj.Lookup):
         ---
         target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_amplitude/target_duration,{}), char)'.format(n_sigfigs)) \
+                .proj(label='CONCAT("Ramp (", amp, " N/s)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Sine(dj.Part):
         definition = """
@@ -103,6 +127,21 @@ class ConditionParams(dj.Lookup):
         target_amplitude: decimal(5,4) # target amplitude (proportion playable window)
         target_frequency: decimal(5,4) # target frequency (Hz)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='CONVERT(ROUND(target_amplitude*force_max,{}), char)'.format(n_sigfigs), 
+                    freq='CONVERT(ROUND(target_frequency,{}), char)'.format(n_sigfigs)
+                ) \
+                .proj(label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
         
     class Chirp(dj.Part):
         definition = """
@@ -113,9 +152,26 @@ class ConditionParams(dj.Lookup):
         target_frequency_init:  decimal(5,4) # target initial frequency (Hz)
         target_frequency_final: decimal(5,4) # target final frequency (Hz)
         """
+
+        def proj_label(self, keep_self: bool=True, n_sigfigs: int=4):
+            """Project label."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='CONVERT(ROUND(force_max*target_amplitude,{}), char)'.format(n_sigfigs),
+                    freq1='CONVERT(ROUND(target_frequency_init,{}), char)'.format(n_sigfigs),
+                    freq2='CONVERT(ROUND(target_frequency_final,{}), char)'.format(n_sigfigs),
+                ) \
+                .proj(label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     @classmethod
-    def parseparams(self, params):
+    def parse_params(self, params: dict, session_date: str=''):
         """
         Parses a dictionary constructed from a set of Speedgoat parameters (written
         on each trial) in order to extract the set of attributes associated with each
@@ -140,6 +196,23 @@ class ConditionParams(dj.Lookup):
                 for k,v in zip(params.keys(), params.values()) 
                 if prog.search(k) is not None and k != 'stimDelay'
                 }
+
+            # replace stim electrode with electrode array model electrode key
+            try:
+                ephys_stimulation_rel = acquisition.EphysStimulation & {'session_date': session_date}
+                electrode_model_key = (equipment.ElectrodeArrayModel & ephys_stimulation_rel).fetch1('KEY')
+
+            except:
+                print('Missing EphysStimulation entry for session {}'.format(session_date))
+
+            else:
+                # get electrode array model electrode key (convert index from matlab convention)
+                electrode_idx_key = {'electrode_idx': stim_attr['stim_electrode'] - 1}
+                electrode_key = (equipment.ElectrodeArrayModel.Electrode & electrode_model_key & electrode_idx_key).fetch1('KEY')
+                stim_attr.update(**electrode_key)
+
+                # remove stim electrode attribute
+                stim_attr.pop('stim_electrode')
 
             cond_rel = cond_rel * self.Stim
             
@@ -201,10 +274,10 @@ class ConditionParams(dj.Lookup):
         return cond_attr, cond_rel, targ_type_rel
     
     @classmethod
-    def targetforce(self, condition_id, Fs):
+    def target_force_profile(self, condition_id, Fs):
 
         # join condition table with part tables
-        joined_table, part_tables = datajointutils.joinparts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
+        joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
 
         # condition parameters
         cond_params = joined_table.fetch1()
@@ -217,17 +290,17 @@ class ConditionParams(dj.Lookup):
             np.linspace(
                 -cond_params['target_pad_pre'], 
                 0, 
-                1+cond_params['target_pad_pre']*int(Fs)
+                1+int(round(cond_params['target_pad_pre']*Fs))
             )[:-1],
             np.linspace(
                 0, 
                 cond_params['target_duration'], 
-                1+cond_params['target_duration']*int(Fs)
+                1+int(round(cond_params['target_duration']*Fs))
             ),
             np.linspace(
                 cond_params['target_duration'], 
                 cond_params['target_duration']+cond_params['target_pad_post'], 
-                1+cond_params['target_pad_post']*int(Fs)
+                1+int(round(cond_params['target_pad_post']*Fs))
             )[1:]
         ))
 
@@ -323,7 +396,7 @@ class Behavior(dj.Imported):
         stim = null:       longblob         # TTL signal indicating the delivery of a stim pulse
         """
 
-        def processforce(self, data_type='raw', filter=True):
+        def process_force(self, data_type='raw', filter=True):
 
             # ensure one session
             session_key = (acquisition.Session & self).fetch('KEY')
@@ -381,46 +454,55 @@ class Behavior(dj.Imported):
 
         self.insert1(key)
 
-        # behavior recording files
-        behavior_files = acquisition.BehaviorRecording.File & key
-
         if (acquisition.Session.Hardware & key & {'hardware': 'Speedgoat'}):
 
-            # local path to behavioral summary file and sample rate
-            fs, behavior_recording_path, behavior_file_prefix, behavior_file_extension \
-                = (acquisition.BehaviorRecording * (behavior_files & {'behavior_file_extension': 'summary'}))\
-                    .fetch1('behavior_recording_sample_rate', 'behavior_recording_path', 'behavior_file_prefix', 'behavior_file_extension')
+            # behavior sample rate
+            fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
 
-            behavior_summary_path = (reference.EngramTier & {'engram_tier': 'locker'})\
-                .ensurelocal(behavior_recording_path + behavior_file_prefix + '.' + behavior_file_extension)
+            # summary file path
+            summary_file_path = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'summary'})\
+                .proj_file_path().fetch1('behavior_file_path')
 
-            # load summary file
-            summary = speedgoat.readtaskstates(behavior_summary_path)
+            # ensure local path
+            summary_file_path = reference.EngramTier.ensure_local(summary_file_path)
+
+            # read summary file
+            summary = speedgoat.read_task_states(summary_file_path)
 
             # update task states
             TaskState.insert(summary, skip_duplicates=True)
 
-            # parameter and data file extensions
-            param_files = [f + '.params' for f in (behavior_files & {'behavior_file_extension': 'params'}).fetch('behavior_file_prefix')]
-            data_files =  [f + '.data'   for f in (behavior_files & {'behavior_file_extension': 'data'}).fetch('behavior_file_prefix')]
+            # parameter and data file paths
+            params_file_paths = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'params'})\
+                .proj_file_path().fetch('behavior_file_path')
+
+            data_file_paths = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'data'})\
+                .proj_file_path().fetch('behavior_file_path')
+
+            # ensure local paths
+            params_file_paths = [reference.EngramTier.ensure_local(pth) for pth in params_file_paths]
+            data_file_paths = [reference.EngramTier.ensure_local(pth) for pth in data_file_paths]
 
             # populate conditions from parameter files
-            for f_param in param_files:
+            for params_path in params_file_paths:
 
                 # trial number
-                trial = re.search(r'beh_(\d*)',f_param).group(1)
+                trial = re.search(r'beh_(\d*)', params_path).group(1)
 
                 # ensure matching data file exists
-                if f_param.replace('params','data') not in data_files:
+                if params_path.replace('params','data') not in data_file_paths:
 
                     print('Missing data file for trial {}'.format(trial))
 
                 else:
                     # read params file
-                    params = speedgoat.readtrialparams(behavior_recording_path + f_param)
+                    params = speedgoat.read_trial_params(params_path)
+
+                    if not params:
+                        continue
 
                     # extract condition attributes from params file
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parse_params(params, key['session_date'])
 
                     # aggregate condition part table parameters into a single dictionary
                     all_cond_attr = {k: v for d in list(cond_attr.values()) for k, v in d.items()}
@@ -429,13 +511,9 @@ class Behavior(dj.Imported):
                     if not(cond_rel & all_cond_attr):
 
                         # insert condition table
-                        if not(ConditionParams()):
-                            new_cond_id = 0
-                        else:
-                            all_cond_id = ConditionParams.fetch('condition_id')
-                            new_cond_id = next(i for i in range(2+max(all_cond_id)) if i not in all_cond_id)
-
+                        new_cond_id = datajointutils.next_unique_int(ConditionParams, 'condition_id')
                         cond_key = {'condition_id': new_cond_id}
+
                         ConditionParams.insert1(cond_key)
 
                         # insert Force, Stim, and Target tables
@@ -452,13 +530,8 @@ class Behavior(dj.Imported):
 
                             if not(cond_part_rel & cond_part_attr):
 
-                                if not(cond_part_rel()):
-                                    new_cond_part_id = 0
-                                else:
-                                    all_cond_part_id = cond_part_rel.fetch(cond_part_id)
-                                    new_cond_part_id = next(i for i in range(2+max(all_cond_part_id)) if i not in all_cond_part_id)
-
-                                cond_part_attr[cond_part_id] = new_cond_part_id
+                                cond_part_attr[cond_part_id] = datajointutils.next_unique_int(cond_part_rel, cond_part_id)
+                                
                             else:
                                 cond_part_attr[cond_part_id] = (cond_part_rel & cond_part_attr).fetch(cond_part_id, limit=1)[0]
 
@@ -471,24 +544,31 @@ class Behavior(dj.Imported):
             # populate trials from data files
             success_state = (TaskState() & 'task_state_name="Success"').fetch1('task_state_id')
 
-            for f_data in data_files:
+            for data_path in data_file_paths:
 
                 # trial number
-                trial = int(re.search(r'beh_(\d*)',f_data).group(1))
+                trial = int(re.search(r'beh_(\d*)',data_path).group(1))
 
                 # find matching parameters file
                 try:
-                    param_file = next(filter(lambda f: f_data.replace('data','params')==f, param_files))
+                    params_path = next(filter(lambda f: data_path.replace('data','params')==f, params_file_paths))
                 except StopIteration:
                     print('Missing parameters file for trial {}'.format(trial))
                 else:
                     # convert params to condition keys
-                    params = speedgoat.readtrialparams(behavior_recording_path + param_file)
-                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parseparams(params)
+                    params = speedgoat.read_trial_params(params_path)
+
+                    if not params:
+                        continue
+
+                    cond_attr, cond_rel, targ_type_rel = ConditionParams.parse_params(params, key['session_date'])
 
                     # read data
-                    data = speedgoat.readtrialdata(behavior_recording_path + f_data, success_state, fs)
+                    data = speedgoat.read_trial_data(data_path, success_state, fs)
 
+                    if not data:
+                        continue
+                        
                     # aggregate condition part table parameters into a single dictionary
                     all_cond_attr = {k: v for d in list(cond_attr.values()) for k, v in d.items()}
 
@@ -496,7 +576,7 @@ class Behavior(dj.Imported):
                     cond_id = (cond_rel & all_cond_attr).fetch1('condition_id')
                     cond_key = dict(**key, condition_id=cond_id)
                     if not(self.Condition & cond_key):
-                        t,force = ConditionParams.targetforce(cond_id,fs)
+                        t, force = ConditionParams.target_force_profile(cond_id, fs)
                         cond_key.update(condition_time=t, condition_force=force)
                         self.Condition.insert1(cond_key, allow_direct_insert=True)
 
