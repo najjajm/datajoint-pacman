@@ -26,32 +26,48 @@ class Force(dj.Computed):
     force_filt: longblob # filtered, aligned, and calibrated force (N)
     """
 
-    key_source = (pacman_processing.TrialAlignment & 'valid_alignment') \
+    # batch process trials
+    key_source = processing.EphysSync \
+        * pacman_acquisition.Behavior.Condition \
+        * pacman_processing.AlignmentParams \
         * pacman_processing.FilterParams
 
     def make(self, key):
 
+        # trial source
+        trial_source = (pacman_processing.TrialAlignment & 'valid_alignment') \
+            * pacman_processing.FilterParams & key
+
         # convert raw force signal to Newtons
-        trial_rel = pacman_acquisition.Behavior.Trial & key
-        force = trial_rel.process_force(data_type='raw', filter=False)
+        trial_rel = pacman_acquisition.Behavior.Trial & trial_source
+        force_data = trial_rel.process_force(data_type='raw', apply_filter=False, keep_keys=True)
 
         # get filter kernel
         filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
         filter_parts = datajointutils.get_parts(processing.Filter, context=inspect.currentframe())
         filter_rel = next(part for part in filter_parts if part & filter_key)
 
-        # apply filter
+        # filter raw data
         fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-        force_filt = filter_rel().filter(force.copy(), fs)
+        [frc.update(force_filt_offline=filter_rel().filter(frc['force_raw_online'], fs)) for frc in force_data];
 
-        # align force signal
-        beh_align = (pacman_processing.TrialAlignment & key).fetch1('behavior_alignment')
-        force_raw_align = force.copy()[beh_align]
-        force_filt_align = force_filt[beh_align]
+        # fetch alignment indices and cast as integers
+        behavior_alignment = (trial_source).fetch('behavior_alignment', order_by='trial')
+        behavior_alignment = list(map(lambda x: x.astype(int), behavior_alignment))
 
-        key.update(
-            force_raw=force_raw_align, 
-            force_filt=force_filt_align
+        # append key and align raw and filtered forces
+        [frc.update(
+            force_raw=frc['force_raw_online'][align_idx],
+            force_filt=frc['force_filt_offline'][align_idx]
         )
+        for frc, align_idx in zip(force_data, behavior_alignment)];
 
-        self.insert1(key)
+        # pop pre-aligned data
+        for f_key in ['force_raw_online', 'force_filt_offline']:
+            [frc.pop(f_key) for frc in force_data]
+
+        # merge key with force data
+        key = [dict(key, **frc) for frc in force_data]
+
+        # insert aligned forces
+        self.insert(key)
