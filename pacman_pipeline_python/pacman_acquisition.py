@@ -452,9 +452,6 @@ class Behavior(dj.Imported):
             if not keep_keys:
                 force_data = np.array([f[data_attr] for f in force_data])
 
-            if len(force_data) == 1:
-                force_data = force_data[0]
-
             return force_data            
         
     def make(self, key):
