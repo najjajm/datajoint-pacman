@@ -357,6 +357,7 @@ class GoodTrial(dj.Computed):
     # Trials that meet behavior quality thresholds
     -> TrialAlignment
     -> BehaviorQualityParams
+    ---
     good_trial: bool
     """
 

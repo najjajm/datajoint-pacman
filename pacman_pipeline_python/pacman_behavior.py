@@ -23,7 +23,6 @@ class Force(dj.Computed):
     -> pacman_processing.TrialAlignment
     -> pacman_processing.FilterParams
     ---
-    -> pacman_processing.GoodTrial
     force_raw:  longblob # raw (online), aligned force signal (V)
     force_filt: longblob # filtered, aligned, and calibrated force (N)
     """
@@ -55,9 +54,7 @@ class Force(dj.Computed):
 
         key.update(
             force_raw=force_raw_align, 
-            force_filt=force_filt_align,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id'),
-            good_trial=(pacman_processing.GoodTrial & key).fetch1('good_trial')
+            force_filt=force_filt_align
         )
 
         self.insert1(key)

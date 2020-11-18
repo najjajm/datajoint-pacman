@@ -24,7 +24,6 @@ class Emg(dj.Imported):
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
-    -> pacman_processing.GoodTrial
     emg_signal: longblob # EMG voltage signal
     """
 
@@ -67,12 +66,16 @@ class Emg(dj.Imported):
         # fetch behavior quality params ID
         behavior_quality_params_id = (pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
 
-        # fetch good trial indicator
-        good_trial = (pacman_processing.GoodTrial & key).fetch1('good_trial')
-
         # update key with channel data
-        keys = [dict(key, **chan_key, emg_signal=emg_signal, behavior_quality_params_id=behavior_quality_params_id, good_trial=good_trial) \
-            for chan_key, emg_signal in zip(channel_keys, emg_signals)]
+        keys = [
+            dict(
+                key, 
+                **chan_key, 
+                emg_signal=emg_signal, 
+                behavior_quality_params_id=behavior_quality_params_id
+            )
+            for chan_key, emg_signal in zip(channel_keys, emg_signals)
+        ]
 
         # insert emg signal keys
         self.insert(keys)
@@ -86,7 +89,6 @@ class MotorUnitSpikeRaster(dj.Computed):
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
-    -> pacman_processing.GoodTrial
     motor_unit_spike_raster: longblob # motor unit trial-aligned spike raster (boolean array)
     """
 
@@ -119,8 +121,7 @@ class MotorUnitSpikeRaster(dj.Computed):
 
         key.update(
             motor_unit_spike_raster=spike_raster,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id'),
-            good_trial=(pacman_processing.GoodTrial & key).fetch1('good_trial')
+            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
         )
 
         # insert spike raster
@@ -138,7 +139,6 @@ class MotorUnitRate(dj.Computed):
     -> MotorUnitSpikeRaster
     -> pacman_processing.FilterParams
     ---
-    -> pacman_processing.GoodTrial
     motor_unit_rate: longblob # motor unit trial-aligned firing rate (spikes/s)
     """
 
@@ -182,8 +182,7 @@ class MotorUnitRate(dj.Computed):
         [
             motor_unit_rate_key.update(
                 filter_params_id = key['filter_params_id'],
-                motor_unit_rate = fs_beh * filter_rel().filter(motor_unit_rate_key['motor_unit_spike_raster'], fs_beh),
-                good_trial = (pacman_processing.GoodTrial & motor_unit_rate_key).fetch1('good_trial')
+                motor_unit_rate = fs_beh * filter_rel().filter(motor_unit_rate_key['motor_unit_spike_raster'], fs_beh)
             )
             for motor_unit_rate_key in motor_unit_rate_keys
         ];
@@ -205,6 +204,7 @@ class MotorUnitPsth(dj.Computed):
     # Peri-stimulus time histogram
     -> processing.MotorUnit
     -> pacman_processing.BehaviorBlock
+    -> pacman_processing.BehaviorQualityParams
     -> pacman_processing.FilterParams
     ---
     motor_unit_psth:     longblob # motor unit trial-averaged firing rate (spikes/s)

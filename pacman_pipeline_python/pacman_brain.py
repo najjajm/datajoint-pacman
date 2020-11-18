@@ -24,7 +24,6 @@ class NeuronSpikeRaster(dj.Computed):
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
-    -> pacman_processing.GoodTrial
     neuron_spike_raster: longblob # neuron trial-aligned spike raster (boolean array)
     """
 
@@ -55,8 +54,7 @@ class NeuronSpikeRaster(dj.Computed):
 
         key.update(
             neuron_spike_raster=spike_raster,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id'),
-            good_trial=(pacman_processing.GoodTrial & key).fetch1('good_trial')
+            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
         )
 
         # insert spike raster
@@ -74,7 +72,6 @@ class NeuronRate(dj.Computed):
     -> NeuronSpikeRaster
     -> pacman_processing.FilterParams
     ---
-    -> pacman_processing.GoodTrial
     neuron_rate: longblob # neuron trial-aligned firing rate (spikes/s)
     """
 
@@ -118,8 +115,7 @@ class NeuronRate(dj.Computed):
         [
             neuron_rate_key.update(
                 filter_params_id = key['filter_params_id'],
-                neuron_rate = fs_beh * filter_rel().filter(neuron_rate_key['neuron_spike_raster'], fs_beh),
-                good_trial = (pacman_processing.GoodTrial & neuron_rate_key).fetch1('good_trial')
+                neuron_rate = fs_beh * filter_rel().filter(neuron_rate_key['neuron_spike_raster'], fs_beh)
             )
             for neuron_rate_key in neuron_rate_keys
         ];
@@ -141,6 +137,7 @@ class NeuronPsth(dj.Computed):
     # Peri-stimulus time histogram
     -> processing.Neuron
     -> pacman_processing.BehaviorBlock
+    -> pacman_processing.BehaviorQualityParams
     -> pacman_processing.FilterParams
     ---
     neuron_psth:     longblob # neuron trial-averaged firing rate (spikes/s)
