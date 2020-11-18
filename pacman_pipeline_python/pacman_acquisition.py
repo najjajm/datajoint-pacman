@@ -396,7 +396,7 @@ class Behavior(dj.Imported):
         stim = null:       longblob         # TTL signal indicating the delivery of a stim pulse
         """
 
-        def process_force(self, data_type='raw', filter=True):
+        def process_force(self, data_type='raw', apply_filter=True, keep_keys=False):
 
             # ensure one session
             session_key = (acquisition.Session & self).fetch('KEY')
@@ -414,9 +414,11 @@ class Behavior(dj.Imported):
             force_rel = self * ConditionParams.Force
 
             # fetch force data
-            data_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
-            data_attr = data_attr[data_type]
-            force_data = force_rel.fetch('force_max', 'force_offset', data_attr, as_dict=True, order_by='trial')
+            data_type_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
+            data_attr = data_type_attr[data_type]
+            force_data = force_rel \
+                .proj(data_attr, 'force_max', 'force_offset') \
+                .fetch(as_dict=True, order_by='trial')
 
             # sample rate
             fs = (acquisition.BehaviorRecording & self).fetch1('behavior_recording_sample_rate')
@@ -439,16 +441,21 @@ class Behavior(dj.Imported):
                 f[data_attr] *= f['force_max']
 
                 # filter
-                if filter:
+                if apply_filter:
                     f[data_attr] = filter_rel.filter(f[data_attr], fs)
 
+            # pop force parameters
+            for key in ['force_id', 'force_max', 'force_offset']:
+                [f.pop(key) for f in force_data]
+
             # limit output to force signal
-            force = np.array([f[data_attr] for f in force_data])
+            if not keep_keys:
+                force_data = np.array([f[data_attr] for f in force_data])
 
-            if len(force) == 1:
-                force = force[0]
+            if len(force_data) == 1:
+                force_data = force_data[0]
 
-            return force            
+            return force_data            
         
     def make(self, key):
 
