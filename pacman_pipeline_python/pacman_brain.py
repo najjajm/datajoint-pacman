@@ -21,14 +21,13 @@ class NeuronSpikeRaster(dj.Computed):
     definition = """
     # Aligned neuron single-trial spike raster
     -> processing.Neuron
-    -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
     neuron_spike_raster: longblob # neuron trial-aligned spike raster (boolean array)
     """
 
-    key_source = processing.Neuron * pacman_processing.BehaviorBlock * (pacman_processing.TrialAlignment & 'valid_alignment') \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
+    key_source = processing.Neuron \
+        * (pacman_processing.TrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
@@ -144,9 +143,12 @@ class NeuronPsth(dj.Computed):
     neuron_psth_sem: longblob # neuron firing rate standard error (spikes/s)
     """
 
-    key_source = (processing.Neuron * pacman_processing.BehaviorBlock * pacman_processing.FilterParams) \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag) \
-        & (NeuronRate & 'good_trial')
+    # limit conditions with good trials
+    key_source = processing.Neuron \
+        * pacman_processing.BehaviorBlock \
+        * pacman_processing.BehaviorQualityParams \
+        * pacman_processing.FilterParams \
+        & (pacman_processing.GoodTrial & 'good_trial')
 
     def make(self, key):
 

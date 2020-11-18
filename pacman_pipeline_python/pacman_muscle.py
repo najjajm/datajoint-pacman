@@ -21,7 +21,6 @@ class Emg(dj.Imported):
     definition = """
     # raw, trialized, and aligned EMG data
     -> acquisition.EmgChannelGroup.Channel
-    -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
     emg_signal: longblob # EMG voltage signal
@@ -29,9 +28,7 @@ class Emg(dj.Imported):
 
     # process per channel group
     key_source = acquisition.EmgChannelGroup \
-        * pacman_processing.BehaviorBlock \
-        * (pacman_processing.TrialAlignment & 'valid_alignment') \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
+        * (pacman_processing.TrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
@@ -86,16 +83,13 @@ class MotorUnitSpikeRaster(dj.Computed):
     definition = """
     # Aligned motor unit single-trial spike raster
     -> processing.MotorUnit
-    -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     ---
     motor_unit_spike_raster: longblob # motor unit trial-aligned spike raster (boolean array)
     """
 
     key_source = processing.MotorUnit \
-        * pacman_processing.BehaviorBlock \
-        * (pacman_processing.TrialAlignment & 'valid_alignment') \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
+        * (pacman_processing.TrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
@@ -211,9 +205,12 @@ class MotorUnitPsth(dj.Computed):
     motor_unit_psth_sem: longblob # motor unit firing rate standard error (spikes/s)
     """
 
-    key_source = (processing.MotorUnit * pacman_processing.BehaviorBlock * pacman_processing.FilterParams) \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag) \
-        & MotorUnitRate
+    # limit conditions with good trials
+    key_source = processing.MotorUnit \
+        * pacman_processing.BehaviorBlock \
+        * pacman_processing.BehaviorQualityParams \
+        * pacman_processing.FilterParams \
+        & (pacman_processing.GoodTrial & 'good_trial')
 
     def make(self, key):
 
