@@ -398,26 +398,28 @@ class Behavior(dj.Imported):
 
         def process_force(self, data_type='raw', apply_filter=True, keep_keys=False):
 
-            # ensure one session
-            session_key = (acquisition.Session & self).fetch('KEY')
-            assert len(session_key)==1, 'Specify one acquisition session'
-            
-            # load cell parameters
-            load_cell_rel = (acquisition.Session.Hardware & session_key & {'hardware':'5lb Load Cell'}) * equipment.Hardware.Parameter
-            load_cell_capacity = (load_cell_rel & {'equipment_parameter':'force capacity'}).fetch1('equipment_parameter_value') # (Newtons)
-            load_cell_output = (load_cell_rel & {'equipment_parameter':'voltage output'}).fetch1('equipment_parameter_value') # (Volts)
+            # aggregate load cell parameters per session
+            load_cell_params = (acquisition.Session.Hardware & {'hardware': '5lb Load Cell'}) * equipment.Hardware.Parameter & self
+
+            force_capacity_per_session = dj.U(*acquisition.Session.primary_key) \
+                .aggr((load_cell_params & {'equipment_parameter': 'force capacity'}), force_capacity='equipment_parameter_value')
+
+            voltage_output_per_session = dj.U(*acquisition.Session.primary_key) \
+                .aggr((load_cell_params & {'equipment_parameter': 'voltage output'}), voltage_output='equipment_parameter_value')
+
+            load_cell_params_per_session = force_capacity_per_session * voltage_output_per_session
 
             # 25 ms Gaussian filter
             filter_rel = processing.Filter.Gaussian & {'sd':25e-3, 'width':4}
 
-            # join trial force data with condition parameters
-            force_rel = self * ConditionParams.Force
+            # join trial force data with force and load cell parameters
+            force_rel = self * ConditionParams.Force * load_cell_params_per_session
 
             # fetch force data
             data_type_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
             data_attr = data_type_attr[data_type]
             force_data = force_rel \
-                .proj(data_attr, 'force_max', 'force_offset') \
+                .proj(data_attr, 'force_max', 'force_offset', 'force_capacity', 'voltage_output') \
                 .fetch(as_dict=True, order_by='trial')
 
             # sample rate
@@ -429,10 +431,10 @@ class Behavior(dj.Imported):
                 f[data_attr] = f[data_attr].copy()
 
                 # normalize force (V) by load cell capacity (V)
-                f[data_attr] /= load_cell_output
+                f[data_attr] /= f['voltage_output']
 
                 # convert force to proportion of maximum load cell output (N)
-                f[data_attr] *= load_cell_capacity/f['force_max']
+                f[data_attr] *= f['force_capacity']/f['force_max']
 
                 # subtract baseline force (N)
                 f[data_attr] -= float(f['force_offset'])
@@ -445,7 +447,7 @@ class Behavior(dj.Imported):
                     f[data_attr] = filter_rel.filter(f[data_attr], fs)
 
             # pop force parameters
-            for key in ['force_id', 'force_max', 'force_offset']:
+            for key in ['force_id', 'force_max', 'force_offset', 'force_capacity', 'voltage_output']:
                 [f.pop(key) for f in force_data]
 
             # limit output to force signal
