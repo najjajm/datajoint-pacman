@@ -19,7 +19,6 @@ schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacma
 class Force(dj.Computed):
     definition = """
     # Single trial force
-    -> pacman_processing.BehaviorBlock
     -> pacman_processing.TrialAlignment
     -> pacman_processing.FilterParams
     ---
@@ -27,10 +26,8 @@ class Force(dj.Computed):
     force_filt: longblob # filtered, aligned, and calibrated force (N)
     """
 
-    key_source = pacman_processing.BehaviorBlock \
-        * (pacman_processing.TrialAlignment & 'valid_alignment') \
-        * pacman_processing.FilterParams \
-        & (pacman_acquisition.Behavior.Trial * pacman_processing.BehaviorBlock.SaveTag)
+    key_source = (pacman_processing.TrialAlignment & 'valid_alignment') \
+        * pacman_processing.FilterParams
 
     def make(self, key):
 
