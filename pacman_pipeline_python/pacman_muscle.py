@@ -60,19 +60,9 @@ class Emg(dj.Imported):
             channel_indexes=channel_indices
         ).T
 
-        # fetch behavior quality params ID
-        behavior_quality_params_id = (pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
-
         # update key with channel data
-        keys = [
-            dict(
-                key, 
-                **chan_key, 
-                emg_signal=emg_signal, 
-                behavior_quality_params_id=behavior_quality_params_id
-            )
-            for chan_key, emg_signal in zip(channel_keys, emg_signals)
-        ]
+        keys = [dict(key, **chan_key, emg_signal=emg_signal)
+            for chan_key, emg_signal in zip(channel_keys, emg_signals)]
 
         # insert emg signal keys
         self.insert(keys)
@@ -113,10 +103,7 @@ class MotorUnitSpikeRaster(dj.Computed):
         spike_raster = np.zeros(len(ephys_alignment), dtype=bool)
         spike_raster[spike_bins] = 1
 
-        key.update(
-            motor_unit_spike_raster=spike_raster,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
-        )
+        key.update(motor_unit_spike_raster=spike_raster)
 
         # insert spike raster
         self.insert1(key)

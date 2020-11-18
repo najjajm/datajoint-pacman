@@ -51,10 +51,7 @@ class NeuronSpikeRaster(dj.Computed):
         spike_raster = np.zeros(len(ephys_alignment), dtype=bool)
         spike_raster[spike_bins] = 1
 
-        key.update(
-            neuron_spike_raster=spike_raster,
-            behavior_quality_params_id=(pacman_processing.BehaviorQualityParams & key).fetch1('behavior_quality_params_id')
-        )
+        key.update(neuron_spike_raster=spike_raster)
 
         # insert spike raster
         self.insert1(key)
