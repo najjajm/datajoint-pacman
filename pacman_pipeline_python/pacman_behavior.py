@@ -30,7 +30,8 @@ class Force(dj.Computed):
     key_source = processing.EphysSync \
         * pacman_acquisition.Behavior.Condition \
         * pacman_processing.AlignmentParams \
-        * pacman_processing.FilterParams
+        * pacman_processing.FilterParams \
+        & (pacman_processing.TrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
