@@ -143,7 +143,8 @@ class NeuronPsth(dj.Computed):
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.FilterParams
     ---
-    neuron_psth: longblob # neuron trial-averaged firing rate (spikes/s)
+    neuron_psth:     longblob # neuron trial-averaged firing rate (spikes/s)
+    neuron_psth_sem: longblob # neuron firing rate standard error (spikes/s)
     """
 
     key_source = (processing.Neuron * pacman_processing.BehaviorBlock * pacman_processing.FilterParams) \
@@ -152,10 +153,14 @@ class NeuronPsth(dj.Computed):
 
     def make(self, key):
 
-        # fetch single-trial firing rates and average
-        rates = (NeuronRate & key & 'good_trial').fetch('neuron_rate')
+        # fetch single-trial firing rates
+        rates = np.stack((NeuronRate & key & 'good_trial').fetch('neuron_rate'))
 
-        psth = np.stack(rates).mean(axis=0)
+        # update key with psth and standard error
+        key.update(
+            neuron_psth=rates.mean(axis=0),
+            neuron_psth_sem=rates.std(axis=0, ddof=1)/np.sqrt(rates.shape[0])
+        )
 
-        # insert motor unit PSTH
-        self.insert1(dict(key, neuron_psth=psth))
+        # insert neuron PSTH
+        self.insert1(key)

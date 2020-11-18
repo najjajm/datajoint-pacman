@@ -3,7 +3,6 @@ import os, inspect, itertools
 import pandas as pd
 import numpy as np
 import neo
-import progressbar
 import matplotlib.pyplot as plt
 from churchland_pipeline_python import lab, acquisition, processing, reference
 from churchland_pipeline_python.utilities import datajointutils
@@ -208,7 +207,8 @@ class MotorUnitPsth(dj.Computed):
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.FilterParams
     ---
-    motor_unit_psth: longblob # motor unit trial-averaged firing rate (spikes/s)
+    motor_unit_psth:     longblob # motor unit trial-averaged firing rate (spikes/s)
+    motor_unit_psth_sem: longblob # motor unit firing rate standard error (spikes/s)
     """
 
     key_source = (processing.MotorUnit * pacman_processing.BehaviorBlock * pacman_processing.FilterParams) \
@@ -217,10 +217,14 @@ class MotorUnitPsth(dj.Computed):
 
     def make(self, key):
 
-        # fetch single-trial firing rates and average
-        rates = (MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate')
+        # fetch single-trial firing rates
+        rates = np.stack((MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate'))
 
-        psth = np.stack(rates).mean(axis=0)
+        # update key with psth and standard error
+        key.update(
+            motor_unit_psth=rates.mean(axis=0),
+            motor_unit_psth_sem=rates.std(axis=0, ddof=1)/np.sqrt(rates.shape[0])
+        )
 
         # insert motor unit PSTH
-        self.insert1(dict(key, motor_unit_psth=psth))
+        self.insert1(key)
