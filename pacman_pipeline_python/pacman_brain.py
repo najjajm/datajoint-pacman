@@ -21,18 +21,19 @@ class NeuronSpikeRaster(dj.Computed):
     definition = """
     # Aligned neuron single-trial spike raster
     -> processing.Neuron
-    -> pacman_processing.TrialAlignment
+    -> pacman_processing.EphysTrialAlignment
     ---
     neuron_spike_raster: longblob # neuron trial-aligned spike raster (boolean array)
     """
 
     key_source = processing.Neuron \
-        * (pacman_processing.TrialAlignment & 'valid_alignment')
+        * pacman_processing.EphysTrialAlignment \
+        & (pacman_processing.BehaviorTrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
         # fetch ephys alignment indices for the current trial
-        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment')
+        ephys_alignment = (pacman_processing.EphysTrialAlignment & key).fetch1('ephys_alignment')
 
         # create spike bin edges centered around ephys alignment indices
         spike_bin_edges = np.append(ephys_alignment, ephys_alignment[-1]+1+np.arange(2)).astype(float)
@@ -132,6 +133,7 @@ class NeuronPsth(dj.Computed):
     definition = """
     # Peri-stimulus time histogram
     -> processing.Neuron
+    -> pacman_processing.AlignmentParams
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.BehaviorQualityParams
     -> pacman_processing.FilterParams
@@ -142,6 +144,7 @@ class NeuronPsth(dj.Computed):
 
     # limit conditions with good trials
     key_source = processing.Neuron \
+        * pacman_processing.AlignmentParams \
         * pacman_processing.BehaviorBlock \
         * pacman_processing.BehaviorQualityParams \
         * pacman_processing.FilterParams \
@@ -150,12 +153,13 @@ class NeuronPsth(dj.Computed):
     def make(self, key):
 
         # fetch single-trial firing rates
-        rates = np.stack((NeuronRate & key & 'good_trial').fetch('neuron_rate'))
+        rates = (NeuronRate & key & (pacman_processing.GoodTrial & 'good_trial')).fetch('neuron_rate')
+        rates = np.stack(rates)
 
         # update key with psth and standard error
         key.update(
             neuron_psth=rates.mean(axis=0),
-            neuron_psth_sem=rates.std(axis=0, ddof=1)/np.sqrt(rates.shape[0])
+            neuron_psth_sem=rates.std(axis=0, ddof=(1 if rates.shape[0] > 1 else 0))/np.sqrt(rates.shape[0])
         )
 
         # insert neuron PSTH

@@ -21,14 +21,15 @@ class Emg(dj.Imported):
     definition = """
     # raw, trialized, and aligned EMG data
     -> acquisition.EmgChannelGroup.Channel
-    -> pacman_processing.TrialAlignment
+    -> pacman_processing.EphysTrialAlignment
     ---
     emg_signal: longblob # EMG voltage signal
     """
 
     # process per channel group
     key_source = acquisition.EmgChannelGroup \
-        * (pacman_processing.TrialAlignment & 'valid_alignment')
+        * pacman_processing.EphysTrialAlignment \
+        & (pacman_processing.BehaviorTrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
@@ -39,7 +40,7 @@ class Emg(dj.Imported):
         channel_indices = [chan_key['ephys_channel_idx'] for chan_key in channel_keys]
 
         # fetch ephys alignment indices
-        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment').astype(int)
+        ephys_alignment = (pacman_processing.EphysTrialAlignment & key).fetch1('ephys_alignment').astype(int)
 
         # fetch local ephys recording file path
         ephys_file_path = (acquisition.EphysRecording.File & key).proj_file_path().fetch1('ephys_file_path')
@@ -73,18 +74,19 @@ class MotorUnitSpikeRaster(dj.Computed):
     definition = """
     # Aligned motor unit single-trial spike raster
     -> processing.MotorUnit
-    -> pacman_processing.TrialAlignment
+    -> pacman_processing.EphysTrialAlignment
     ---
     motor_unit_spike_raster: longblob # motor unit trial-aligned spike raster (boolean array)
     """
 
     key_source = processing.MotorUnit \
-        * (pacman_processing.TrialAlignment & 'valid_alignment')
+        * pacman_processing.EphysTrialAlignment \
+        & (pacman_processing.BehaviorTrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
         # fetch ephys alignment indices for the current trial
-        ephys_alignment = (pacman_processing.TrialAlignment & key).fetch1('ephys_alignment')
+        ephys_alignment = (pacman_processing.EphysTrialAlignment & key).fetch1('ephys_alignment')
 
         # create spike bin edges centered around ephys alignment indices
         spike_bin_edges = np.append(ephys_alignment, ephys_alignment[-1]+1+np.arange(2)).astype(float)
@@ -184,6 +186,7 @@ class MotorUnitPsth(dj.Computed):
     definition = """
     # Peri-stimulus time histogram
     -> processing.MotorUnit
+    -> pacman_processing.AlignmentParams
     -> pacman_processing.BehaviorBlock
     -> pacman_processing.BehaviorQualityParams
     -> pacman_processing.FilterParams
@@ -194,6 +197,7 @@ class MotorUnitPsth(dj.Computed):
 
     # limit conditions with good trials
     key_source = processing.MotorUnit \
+        * pacman_processing.AlignmentParams \
         * pacman_processing.BehaviorBlock \
         * pacman_processing.BehaviorQualityParams \
         * pacman_processing.FilterParams \
@@ -202,12 +206,13 @@ class MotorUnitPsth(dj.Computed):
     def make(self, key):
 
         # fetch single-trial firing rates
-        rates = np.stack((MotorUnitRate & key & 'good_trial').fetch('motor_unit_rate'))
+        rates = (MotorUnitRate & key & (pacman_processing.GoodTrial & 'good_trial')).fetch('motor_unit_rate')
+        rates = np.stack(rates)
 
         # update key with psth and standard error
         key.update(
             motor_unit_psth=rates.mean(axis=0),
-            motor_unit_psth_sem=rates.std(axis=0, ddof=1)/np.sqrt(rates.shape[0])
+            motor_unit_psth_sem=rates.std(axis=0, ddof=(1 if rates.shape[0] > 1 else 0))/np.sqrt(rates.shape[0])
         )
 
         # insert motor unit PSTH

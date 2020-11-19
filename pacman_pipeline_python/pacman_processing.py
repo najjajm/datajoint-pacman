@@ -258,20 +258,19 @@ class FilterParams(dj.Manual):
 # =======
 
 @schema
-class TrialAlignment(dj.Computed):
+class BehaviorTrialAlignment(dj.Computed):
     definition = """
-    # Trial alignment indices for behavior and ephys data 
-    -> EphysTrialStart
+    # Trial alignment indices for behavior data
+    -> pacman_acquisition.Behavior.Trial
     -> AlignmentParams
     ---
     valid_alignment = 0:       bool     # whether the trial can be aligned
     behavior_alignment = null: longblob # trial alignment indices for behavioral data
-    ephys_alignment = null:    longblob # trial alignment indices for ephys data
     """
-    
-    # restrict to trials with a defined start index
-    key_source = ((EphysTrialStart & 'ephys_trial_start') & (pacman_acquisition.Behavior.Trial & 'successful_trial')) \
-        * AlignmentParams
+
+    # restrict to successful trials
+    key_source = (pacman_acquisition.Behavior.Trial & 'successful_trial') \
+    * AlignmentParams
 
     def make(self, key):
 
@@ -337,13 +336,6 @@ class TrialAlignment(dj.Computed):
 
             key.update(valid_alignment=1, behavior_alignment=behavior_alignment)
 
-            # ephys alignment indices
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+int(round(fs_ephys * np.ptp(t))))).astype(int)
-            ephys_alignment = t_idx_ephys + align_idx * round(fs_ephys/fs_beh)
-            ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
-            key.update(ephys_alignment=ephys_alignment)
-
         self.insert1(key)
 
 
@@ -351,18 +343,59 @@ class TrialAlignment(dj.Computed):
 # LEVEL 2
 # =======
 
+@schema
+class EphysTrialAlignment(dj.Computed):
+    definition = """
+    # Trial alignment indices for ephys data 
+    -> BehaviorTrialAlignment
+    -> EphysTrialStart
+    ---
+    ephys_alignment = null:    longblob # trial alignment indices for ephys data
+    """
+
+    key_source = BehaviorTrialAlignment * (EphysTrialStart & 'ephys_trial_start')
+
+    def make(self, key):
+
+        # fetch behavior alignment indices
+        behavior_alignment = (BehaviorTrialAlignment & key).fetch1()
+
+        if behavior_alignment['valid_alignment']:
+
+            # fetch condition time
+            t = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+            # sample rates
+            fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+
+            # alignment index
+            t_idx_beh = (fs_beh * t).astype(int)
+            zero_idx = np.argmax(t_idx_beh == 0)
+            align_idx = behavior_alignment['behavior_alignment'][zero_idx]
+
+            # ephys alignment indices
+            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+int(round(fs_ephys * np.ptp(t))))).astype(int)
+            ephys_alignment = t_idx_ephys + align_idx * round(fs_ephys/fs_beh)
+            ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
+
+            key.update(ephys_alignment=ephys_alignment)
+
+        self.insert1(key)
+
+
 @schema 
 class GoodTrial(dj.Computed):
     definition = """
     # Trials that meet behavior quality thresholds
-    -> TrialAlignment
+    -> BehaviorTrialAlignment
     -> BehaviorQualityParams
     ---
     good_trial: bool
     """
 
     # process keys per condition
-    key_source = (pacman_acquisition.Behavior.Condition & (TrialAlignment & 'valid_alignment')) \
+    key_source = (pacman_acquisition.Behavior.Condition & (BehaviorTrialAlignment & 'valid_alignment')) \
         * AlignmentParams \
         * BehaviorQualityParams
 
@@ -375,7 +408,7 @@ class GoodTrial(dj.Computed):
         behavior_quality_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in behavior_quality_params.items()}
 
         # trial table
-        trial_rel = pacman_acquisition.Behavior.Trial & key & (TrialAlignment & 'valid_alignment')
+        trial_rel = pacman_acquisition.Behavior.Trial & key & (BehaviorTrialAlignment & 'valid_alignment')
 
         # process force signal (default filter -- 25 ms Gaussian)
         trial_forces = trial_rel.process_force()
@@ -383,7 +416,7 @@ class GoodTrial(dj.Computed):
             trial_forces = [trial_forces]
 
         # align force signals
-        beh_align = (TrialAlignment & trial_rel).fetch('behavior_alignment', order_by='trial')
+        beh_align = (BehaviorTrialAlignment & trial_rel).fetch('behavior_alignment', order_by='trial')
         trial_forces = np.stack([f[idx] for f, idx in zip(trial_forces, beh_align)])
 
         # get target force profile
@@ -427,7 +460,7 @@ class GoodTrial(dj.Computed):
         ), axis=1)
 
         # fetch alignment keys
-        alignment_keys = (TrialAlignment & key & 'valid_alignment').fetch('KEY', order_by='trial')
+        alignment_keys = (BehaviorTrialAlignment & key & 'valid_alignment').fetch('KEY', order_by='trial')
 
         # augment alignment keys with good trial
         alignment_keys = [

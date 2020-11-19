@@ -19,7 +19,7 @@ schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacma
 class Force(dj.Computed):
     definition = """
     # Single trial force
-    -> pacman_processing.TrialAlignment
+    -> pacman_processing.BehaviorTrialAlignment
     -> pacman_processing.FilterParams
     ---
     force_raw:  longblob # raw (online), aligned force signal (V)
@@ -27,16 +27,15 @@ class Force(dj.Computed):
     """
 
     # batch process trials
-    key_source = processing.EphysSync \
-        * pacman_acquisition.Behavior.Condition \
+    key_source = pacman_acquisition.Behavior.Condition \
         * pacman_processing.AlignmentParams \
         * pacman_processing.FilterParams \
-        & (pacman_processing.TrialAlignment & 'valid_alignment')
+        & (pacman_processing.BehaviorTrialAlignment & 'valid_alignment')
 
     def make(self, key):
 
         # trial source
-        trial_source = (pacman_processing.TrialAlignment & 'valid_alignment') \
+        trial_source = (pacman_processing.BehaviorTrialAlignment & 'valid_alignment') \
             * pacman_processing.FilterParams & key
 
         # convert raw force signal to Newtons
