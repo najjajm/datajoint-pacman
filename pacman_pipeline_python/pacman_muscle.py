@@ -201,6 +201,7 @@ class MotorUnitPsth(dj.Computed):
         * pacman_processing.BehaviorBlock \
         * pacman_processing.BehaviorQualityParams \
         * pacman_processing.FilterParams \
+        & MotorUnitRate \
         & (pacman_processing.GoodTrial & 'good_trial')
 
     def make(self, key):

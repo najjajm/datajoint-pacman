@@ -148,6 +148,7 @@ class NeuronPsth(dj.Computed):
         * pacman_processing.BehaviorBlock \
         * pacman_processing.BehaviorQualityParams \
         * pacman_processing.FilterParams \
+        & NeuronRate \
         & (pacman_processing.GoodTrial & 'good_trial')
 
     def make(self, key):

@@ -412,8 +412,6 @@ class GoodTrial(dj.Computed):
 
         # process force signal (default filter -- 25 ms Gaussian)
         trial_forces = trial_rel.process_force()
-        if len(trial_rel) == 1:
-            trial_forces = [trial_forces]
 
         # align force signals
         beh_align = (BehaviorTrialAlignment & trial_rel).fetch('behavior_alignment', order_by='trial')
