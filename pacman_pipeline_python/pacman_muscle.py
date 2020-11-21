@@ -111,12 +111,18 @@ class MotorUnitSpikeRaster(dj.Computed):
         self.insert1(key)
 
     
-    def rebin(self, fs: int=None, as_raster: bool=False) -> (List[dict], np.ndarray):
+    def rebin(
+        self, 
+        fs: int=None, 
+        as_raster: bool=False, 
+        order_by: str=None
+        ) -> (List[dict], np.ndarray):
         """Rebin spike rasters.
 
         Args:
             fs (int, optional): New sample rate. Defaults to behavior sample rate.
             as_raster (bool, optional): If True, returns output as raster. If False, returns spike indices. Defaults to False.
+            order_by (str, optional): Attribute used to order the returned data. If None, returns the data without additional sorting. 
 
         Returns:
             keys (list): List of key dictionaries to identify each set of rebinned spikes with the original table entry
@@ -165,6 +171,18 @@ class MotorUnitSpikeRaster(dj.Computed):
             # append spike rasters and keys to list
             keys.extend(raster_keys)
             spikes.extend(new_spikes)
+
+        # order the data
+        if order_by is not None:
+
+            # extract the ordering attribute from the keys
+            order_attr = [key[order_by] for key in keys]
+
+            # sort the spike data
+            spike_data = [(key, spk) for _, key, spk in sorted(zip(order_attr, keys, spikes))]
+
+            # unpack the keys and spike indices as 
+            keys, spikes = map(list, zip(*spike_data))
 
         return keys, np.array(spikes)
 
