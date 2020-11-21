@@ -444,7 +444,7 @@ class Behavior(dj.Imported):
 
                 # filter
                 if apply_filter:
-                    f[data_attr] = filter_rel.filter(f[data_attr], fs)
+                    f[data_attr] = filter_rel.filt(f[data_attr], fs)
 
             # pop force parameters
             for key in ['force_id', 'force_max', 'force_offset', 'force_capacity', 'voltage_output']:

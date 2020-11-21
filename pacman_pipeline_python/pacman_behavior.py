@@ -49,7 +49,7 @@ class Force(dj.Computed):
 
         # filter raw data
         fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-        [frc.update(force_filt_offline=filter_rel().filter(frc['force_raw_online'], fs)) for frc in force_data];
+        [frc.update(force_filt_offline=filter_rel().filt(frc['force_raw_online'], fs)) for frc in force_data];
 
         # fetch alignment indices and cast as integers
         behavior_alignment = (trial_source).fetch('behavior_alignment', order_by='trial')

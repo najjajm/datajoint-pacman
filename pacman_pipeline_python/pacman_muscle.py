@@ -8,7 +8,7 @@ from churchland_pipeline_python import lab, acquisition, processing, reference
 from churchland_pipeline_python.utilities import datajointutils
 from . import pacman_acquisition, pacman_processing
 from sklearn import decomposition
-from typing import Generic, List, Tuple
+from typing import List, Tuple
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_muscle')
 
@@ -223,7 +223,7 @@ class MotorUnitRate(dj.Computed):
         [
             motor_unit_rate_key.update(
                 filter_params_id = key['filter_params_id'],
-                motor_unit_rate = fs_beh * filter_rel().filter(motor_unit_rate_key['motor_unit_spike_raster'], fs_beh)
+                motor_unit_rate = fs_beh * filter_rel().filt(motor_unit_rate_key['motor_unit_spike_raster'], fs_beh)
             )
             for motor_unit_rate_key in motor_unit_rate_keys
         ];

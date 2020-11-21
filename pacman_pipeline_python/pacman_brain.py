@@ -112,7 +112,7 @@ class NeuronRate(dj.Computed):
         [
             neuron_rate_key.update(
                 filter_params_id = key['filter_params_id'],
-                neuron_rate = fs_beh * filter_rel().filter(neuron_rate_key['neuron_spike_raster'], fs_beh)
+                neuron_rate = fs_beh * filter_rel().filt(neuron_rate_key['neuron_spike_raster'], fs_beh)
             )
             for neuron_rate_key in neuron_rate_keys
         ];
