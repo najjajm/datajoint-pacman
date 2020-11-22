@@ -4,6 +4,7 @@ import numpy as np
 from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
 from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
+from functools import reduce
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_acquisition')
 
@@ -98,7 +99,20 @@ class ConditionParams(dj.Lookup):
                 rel = self * rel
 
             return rel
-        
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_offset, 4), char)') \
+                .proj(rank='CONCAT("00_", LPAD(amp, 8, 0))')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
+
     class Ramp(dj.Part):
         definition = """
         # Linear ramp force profile parameters
@@ -118,6 +132,19 @@ class ConditionParams(dj.Lookup):
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='ROUND(force_max*target_amplitude/target_duration, 4)') \
+                .proj(rank='CONCAT("10_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     class Sine(dj.Part):
         definition = """
@@ -142,6 +169,24 @@ class ConditionParams(dj.Lookup):
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(
+                    amp='ROUND(target_amplitude*force_max, 4)', 
+                    freq='CONVERT(ROUND(target_frequency, 4), char)'
+                ) \
+                .proj(rank=(
+                    'CONCAT("20_", LPAD(freq, 8, 0), "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
+                ))
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     class Chirp(dj.Part):
         definition = """
@@ -168,6 +213,48 @@ class ConditionParams(dj.Lookup):
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='ROUND(force_max*target_amplitude, 4)',
+                    freq1='LPAD(CONVERT(ROUND(target_frequency_init, 4), char), 8, 0)',
+                    freq2='LPAD(CONVERT(ROUND(target_frequency_final, 4), char), 8, 0)',
+                ) \
+                .proj(rank=(
+                    'CONCAT("30_", freq1, "_", freq2, "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
+                ))
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
+
+    def proj_target_label(self, n_sigfigs: int=4):
+        """Project label in all child target tables and joins with master."""
+
+        target_children = datajointutils.get_parts(ConditionParams.Target)
+
+        target_labels = [dj.U('condition_id', 'label') & (x & self).proj_label(n_sigfigs=n_sigfigs) for x in target_children]
+
+        labeled_self = reduce(lambda x,y: x+y, target_labels)
+
+        return labeled_self
+
+
+    def proj_target_rank(self):
+        """Project rank in all child target tables and joins with master."""
+
+        target_children = datajointutils.get_parts(ConditionParams.Target)
+
+        target_ranks = [dj.U('condition_id', 'rank') & (x & self).proj_rank() for x in target_children]
+
+        ranked_self = reduce(lambda x,y: x+y, target_ranks)
+
+        return ranked_self
 
         
     @classmethod
