@@ -202,7 +202,7 @@ class EmgEnvelope(dj.Computed):
     """
 
     # process per filter setting
-    key_source = pacman_processing.FilterParams & Emg & {'key_source':'2018-06-22'}
+    key_source = pacman_processing.FilterParams & Emg
 
     def make(self, key):
 
