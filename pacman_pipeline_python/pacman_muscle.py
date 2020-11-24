@@ -201,9 +201,6 @@ class EmgEnvelope(dj.Computed):
     emg_envelope: longblob # EMG envelope
     """
 
-    # process per filter setting
-    key_source = pacman_processing.FilterParams & Emg
-
     def make(self, key):
 
         # fetch behavior condition time vector
@@ -241,7 +238,6 @@ class EmgEnvelope(dj.Computed):
 
         # insert emg envelopes
         self.insert(emg_attributes)
-
 
 
 @schema
