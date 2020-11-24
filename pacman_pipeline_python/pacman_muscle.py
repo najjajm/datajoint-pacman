@@ -192,6 +192,59 @@ class MotorUnitSpikeRaster(dj.Computed):
 # =======
 
 @schema
+class EmgEnvelope(dj.Computed):
+    definition = """
+    # Rectified and filtered EMG data
+    -> Emg
+    -> pacman_processing.FilterParams
+    ---
+    emg_envelope: longblob # EMG envelope
+    """
+
+    # process per filter setting
+    key_source = pacman_processing.FilterParams & Emg & {'key_source':'2018-06-22'}
+
+    def make(self, key):
+
+        # fetch behavior condition time vector
+        behavior_condition_time = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # make ephys condition time vector
+        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+        ephys_condition_time, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
+
+        # fetch raw emg data
+        emg_attributes = (Emg & key).fetch(as_dict=True)
+
+        # highpass filter and rectify raw emg signals
+        [emg_attr.update(emg_envelope=abs(processing.Filter.Butterworth().filt(emg_attr['emg_signal'], fs_ephys, order=2, low_cut=40)))
+            for emg_attr in emg_attributes];
+
+        # remove raw emg signal
+        [emg_attr.pop('emg_signal') for emg_attr in emg_attributes];
+
+        # get filter kernel
+        filter_key = (processing.Filter & (pacman_processing.FilterParams & key)).fetch1('KEY')
+        filter_parts = datajointutils.get_parts(processing.Filter, context=inspect.currentframe())
+        filter_rel = next(part for part in filter_parts if part & filter_key)
+
+        # smooth rectified emg signals to construct envelope and remove 
+        [emg_attr.update(
+            filter_params_id=key['filter_params_id'],
+            emg_envelope=filter_rel().filt(emg_attr['emg_envelope'], fs_ephys)
+        ) for emg_attr in emg_attributes];
+
+        # resample emg to behavior time base
+        [emg_attr.update(
+            emg_envelope=np.interp(behavior_condition_time, ephys_condition_time, emg_attr['emg_envelope'])
+        ) for emg_attr in emg_attributes];
+
+        # insert emg envelopes
+        self.insert(emg_attributes)
+
+
+
+@schema
 class MotorUnitRate(dj.Computed):
     definition = """
     # Aligned motor unit single-trial firing rate
@@ -256,6 +309,45 @@ class MotorUnitRate(dj.Computed):
 # =======
 # LEVEL 2
 # =======
+
+@schema
+class EmgEnvelopeMean(dj.Computed):
+    definition = """
+    # Trial-averaged rectified and filtered EMG data
+    -> acquisition.EmgChannelGroup.Channel
+    -> pacman_processing.AlignmentParams
+    -> pacman_processing.BehaviorBlock
+    -> pacman_processing.BehaviorQualityParams
+    -> pacman_processing.FilterParams
+    ---
+    emg_envelope_mean: longblob # trial-averaged EMG envelope (au)
+    emg_envelope_sem:  longblob # EMG envelope standard error across trials (au)
+    """
+
+    # limit conditions with good trials
+    key_source = acquisition.EmgChannelGroup.Channel \
+        * pacman_processing.AlignmentParams \
+        * pacman_processing.BehaviorBlock \
+        * pacman_processing.BehaviorQualityParams \
+        * pacman_processing.FilterParams \
+        & EmgEnvelope \
+        & (pacman_processing.GoodTrial & 'good_trial')
+
+    def make(self, key):
+
+        # fetch single-trial emg envelopes
+        emg_envelope = (EmgEnvelope & key & (pacman_processing.GoodTrial & 'good_trial')).fetch('emg_envelope')
+        emg_envelope = np.stack(emg_envelope)
+
+        # update key with mean and standard error
+        key.update(
+            emg_envelope_mean=emg_envelope.mean(axis=0),
+            emg_envelope_sem=emg_envelope.std(axis=0, ddof=(1 if emg_envelope.shape[0] > 1 else 0))/np.sqrt(emg_envelope.shape[0])
+        )
+
+        # insert emg envelope means
+        self.insert1(key)
+
 
 @schema
 class MotorUnitPsth(dj.Computed):
