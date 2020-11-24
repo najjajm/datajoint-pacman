@@ -391,6 +391,9 @@ class ConditionParams(dj.Lookup):
             )[1:]
         ))
 
+        # round time to maximum temporal precision
+        t = t.round(int(np.ceil(np.log10(Fs))))
+
         # target force functions
         if self.Static in part_tables:
 
