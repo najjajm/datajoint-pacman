@@ -361,7 +361,7 @@ class ConditionParams(dj.Lookup):
         return cond_attr, cond_rel, targ_type_rel
     
     @classmethod
-    def target_force_profile(self, condition_id, fs):
+    def target_force_profile(self, condition_id: int, fs: int):
 
         # join condition table with part tables
         joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
@@ -452,6 +452,8 @@ class Behavior(dj.Imported):
     # Behavioral data imported from Speedgoat
     -> acquisition.BehaviorRecording
     """
+
+    key_source = acquisition.BehaviorRecording
 
     class Condition(dj.Part):
         definition = """
@@ -554,7 +556,7 @@ class Behavior(dj.Imported):
         if (acquisition.Session.Hardware & key & {'hardware': 'Speedgoat'}):
 
             # behavior sample rate
-            fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+            fs = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
 
             # summary file path
             summary_file_path = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'summary'})\

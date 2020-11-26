@@ -310,21 +310,21 @@ class BehaviorTrialAlignment(dj.Computed):
             max_lag_samp = int(round(fs_beh * max_lag))
             lags = range(-max_lag_samp, 1+max_lag_samp)
 
-            # truncate time indices  ap
-            precision = int(round(np.log10(fs_beh)))
-            trunc_idx = np.nonzero((t>=round(t[0]+max_lag, precision)) & (t<=round(t[-1]-max_lag, precision)))[0]
-            target_force = target_force[trunc_idx]
+            # truncate time indices
+            precision = int(np.ceil(np.log10(fs_beh)))
+            trunc_idx = np.flatnonzero((t>=round(t[0]+max_lag, precision)) & (t<=round(t[-1]-max_lag, precision)))
+            target_force_trunc = target_force[trunc_idx]
             align_idx_trunc = trunc_idx - zero_idx
 
             # process force signal
-            force = trial_rel.process_force()
+            force = trial_rel.process_force()[0]
 
             # compute normalized mean squared error for each lag
             nmse = np.full(1+2*max_lag_samp, -np.inf)
             for idx, lag in enumerate(lags):
                 if (align_idx + lag + align_idx_trunc[-1]) < len(force):
                     force_align = force[align_idx+lag+align_idx_trunc]
-                    nmse[idx] = 1 - np.sqrt(np.mean((force_align-target_force)**2)/np.var(target_force))
+                    nmse[idx] = 1 - np.sqrt(np.mean((force_align-target_force_trunc)**2)/np.var(target_force_trunc))
 
             # shift alignment indices by optimal lag
             align_idx += lags[np.argmax(nmse)]
