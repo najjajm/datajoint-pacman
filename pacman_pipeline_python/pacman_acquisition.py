@@ -93,7 +93,7 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='CONVERT(ROUND(force_max*target_offset,{}), char)'.format(n_sigfigs)) \
-                .proj(label='CONCAT("Static (", amp, " N)")')
+                .proj(condition_label='CONCAT("Static (", amp, " N)")')
 
             if keep_self:
                 rel = self * rel
@@ -105,7 +105,7 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='CONVERT(ROUND(force_max*target_offset, 4), char)') \
-                .proj(rank='CONCAT("00_", LPAD(amp, 8, 0))')
+                .proj(condition_rank='CONCAT("00_", LPAD(amp, 8, 0))')
 
             if keep_self:
                 rel = self * rel
@@ -126,7 +126,7 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='CONVERT(ROUND(force_max*target_amplitude/target_duration,{}), char)'.format(n_sigfigs)) \
-                .proj(label='CONCAT("Ramp (", amp, " N/s)")')
+                .proj(condition_label='CONCAT("Ramp (", amp, " N/s)")')
 
             if keep_self:
                 rel = self * rel
@@ -138,7 +138,7 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='ROUND(force_max*target_amplitude/target_duration, 4)') \
-                .proj(rank='CONCAT("10_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))')
+                .proj(condition_rank='CONCAT("10_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))')
 
             if keep_self:
                 rel = self * rel
@@ -163,7 +163,7 @@ class ConditionParams(dj.Lookup):
                     amp='CONVERT(ROUND(target_amplitude*force_max,{}), char)'.format(n_sigfigs), 
                     freq='CONVERT(ROUND(target_frequency,{}), char)'.format(n_sigfigs)
                 ) \
-                .proj(label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
+                .proj(condition_label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
 
             if keep_self:
                 rel = self * rel
@@ -178,7 +178,7 @@ class ConditionParams(dj.Lookup):
                     amp='ROUND(target_amplitude*force_max, 4)', 
                     freq='CONVERT(ROUND(target_frequency, 4), char)'
                 ) \
-                .proj(rank=(
+                .proj(condition_rank=(
                     'CONCAT("20_", LPAD(freq, 8, 0), "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
                 ))
 
@@ -207,7 +207,7 @@ class ConditionParams(dj.Lookup):
                     freq1='CONVERT(ROUND(target_frequency_init,{}), char)'.format(n_sigfigs),
                     freq2='CONVERT(ROUND(target_frequency_final,{}), char)'.format(n_sigfigs),
                 ) \
-                .proj(label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
+                .proj(condition_label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
 
             if keep_self:
                 rel = self * rel
@@ -223,7 +223,7 @@ class ConditionParams(dj.Lookup):
                     freq1='LPAD(CONVERT(ROUND(target_frequency_init, 4), char), 8, 0)',
                     freq2='LPAD(CONVERT(ROUND(target_frequency_final, 4), char), 8, 0)',
                 ) \
-                .proj(rank=(
+                .proj(condition_rank=(
                     'CONCAT("30_", freq1, "_", freq2, "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
                 ))
 
@@ -233,24 +233,24 @@ class ConditionParams(dj.Lookup):
             return rel
 
 
-    def proj_target_label(self, n_sigfigs: int=4):
+    def proj_label(self, n_sigfigs: int=4):
         """Project label in all child target tables and joins with master."""
 
         target_children = datajointutils.get_parts(ConditionParams.Target)
 
-        target_labels = [dj.U('condition_id', 'label') & (x & self).proj_label(n_sigfigs=n_sigfigs) for x in target_children]
+        target_labels = [dj.U('condition_id', 'condition_label') & (x & self).proj_label(n_sigfigs=n_sigfigs) for x in target_children]
 
         labeled_self = reduce(lambda x,y: x+y, target_labels)
 
         return labeled_self
 
 
-    def proj_target_rank(self):
+    def proj_rank(self):
         """Project rank in all child target tables and joins with master."""
 
         target_children = datajointutils.get_parts(ConditionParams.Target)
 
-        target_ranks = [dj.U('condition_id', 'rank') & (x & self).proj_rank() for x in target_children]
+        target_ranks = [dj.U('condition_id', 'condition_rank') & (x & self).proj_rank() for x in target_children]
 
         ranked_self = reduce(lambda x,y: x+y, target_ranks)
 
