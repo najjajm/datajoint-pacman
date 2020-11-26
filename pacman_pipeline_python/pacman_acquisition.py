@@ -361,7 +361,7 @@ class ConditionParams(dj.Lookup):
         return cond_attr, cond_rel, targ_type_rel
     
     @classmethod
-    def target_force_profile(self, condition_id, Fs):
+    def target_force_profile(self, condition_id, fs):
 
         # join condition table with part tables
         joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
@@ -369,30 +369,22 @@ class ConditionParams(dj.Lookup):
         # condition parameters
         cond_params = joined_table.fetch1()
 
-        # convert condition parameters to float
-        cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
+        # standard sample rate
+        fs_standard = Decimal(1e3).quantize(cond_params['target_duration'])
 
-        # time vector
-        t = np.concatenate((
-            np.linspace(
-                -cond_params['target_pad_pre'], 
-                0, 
-                1+int(round(cond_params['target_pad_pre']*Fs))
-            )[:-1],
-            np.linspace(
-                0, 
-                cond_params['target_duration'], 
-                1+int(round(cond_params['target_duration']*Fs))
-            ),
-            np.linspace(
-                cond_params['target_duration'], 
-                cond_params['target_duration']+cond_params['target_pad_post'], 
-                1+int(round(cond_params['target_pad_post']*Fs))
-            )[1:]
-        ))
+        # lengths of each target region
+        target_lens = (
+            int(round(cond_params['target_pad_pre']  * fs_standard)),
+            int(round(cond_params['target_duration'] * fs_standard)) + 1,
+            int(round(cond_params['target_pad_post'] * fs_standard))
+        )
 
-        # round time to maximum temporal precision
-        t = t.round(int(np.ceil(np.log10(Fs))))
+        # time samples
+        xi = (
+            np.arange(-target_lens[0], 0),
+            np.arange(0, target_lens[1]),
+            np.arange(target_lens[1], sum(target_lens[-2:]))
+        )
 
         # target force functions
         if self.Static in part_tables:
@@ -415,18 +407,34 @@ class ConditionParams(dj.Lookup):
         else:
             print('Unrecognized condition table')
 
-        # indices of target regions
-        t_idx = {
-            'pre': t<0,
-            'target': (t>=0) & (t<=cond_params['target_duration']),
-            'post': t>cond_params['target_duration']}
+        # convert condition parameters to float
+        cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
+        fs_standard = float(fs_standard)
 
-        # target force profile
-        force = np.empty(len(t))
-        force[t_idx['pre']]    = force_fcn(t[np.argmax(t_idx['target'])], cond_params) * np.ones(np.count_nonzero(t_idx['pre']))
-        force[t_idx['target']] = force_fcn(t[t_idx['target']],            cond_params)
-        force[t_idx['post']]   = force_fcn(t[np.argmax(t_idx['post'])],   cond_params) * np.ones(np.count_nonzero(t_idx['post']))
-        force = (force + cond_params['target_offset']) * cond_params['force_max']
+        # construct target force profile
+        force_standard = np.hstack((
+            force_fcn(xi[1][0]/fs_standard,  cond_params) * np.ones(target_lens[0]),
+            force_fcn(xi[1]/fs_standard,     cond_params),
+            force_fcn(xi[1][-1]/fs_standard, cond_params) * np.ones(target_lens[2])
+        ))
+
+        # add force offset
+        force_standard += cond_params['target_offset']
+
+        # scale force from screen units to Newtons
+        force_standard *= cond_params['force_max']
+
+        # concatenate time samples and convert to seconds
+        t_standard = np.hstack(xi) / fs_standard
+
+        # resample time and force vectors at desired sample rate
+        # this ensures a consistent relationship between the sample rates and lengths of the time vectors
+        t = np.linspace(t_standard[0], t_standard[-1], int(round(len(t_standard) * fs/fs_standard)))
+
+        force = np.interp(t, t_standard, force_standard)
+
+        # round time to maximum temporal precision
+        t = t.round(int(np.ceil(np.log10(fs))))
 
         return t, force
 
