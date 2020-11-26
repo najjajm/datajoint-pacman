@@ -369,14 +369,14 @@ class ConditionParams(dj.Lookup):
         # condition parameters
         cond_params = joined_table.fetch1()
 
-        # standard sample rate
-        fs_standard = Decimal(1e3).quantize(cond_params['target_duration'])
+        # convert sample rate to decimal type with precision inferred from condition parameters
+        fs_dec = Decimal(fs).quantize(cond_params['target_duration'])
 
         # lengths of each target region
         target_lens = (
-            int(round(cond_params['target_pad_pre']  * fs_standard)),
-            int(round(cond_params['target_duration'] * fs_standard)) + 1,
-            int(round(cond_params['target_pad_post'] * fs_standard))
+            int(round(cond_params['target_pad_pre']  * fs_dec)),
+            int(round(cond_params['target_duration'] * fs_dec)) + 1,
+            int(round(cond_params['target_pad_post'] * fs_dec))
         )
 
         # time samples
@@ -409,29 +409,22 @@ class ConditionParams(dj.Lookup):
 
         # convert condition parameters to float
         cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
-        fs_standard = float(fs_standard)
 
         # construct target force profile
-        force_standard = np.hstack((
-            force_fcn(xi[1][0]/fs_standard,  cond_params) * np.ones(target_lens[0]),
-            force_fcn(xi[1]/fs_standard,     cond_params),
-            force_fcn(xi[1][-1]/fs_standard, cond_params) * np.ones(target_lens[2])
+        force = np.hstack((
+            force_fcn(xi[1][0]/fs,  cond_params) * np.ones(target_lens[0]),
+            force_fcn(xi[1]/fs,     cond_params),
+            force_fcn(xi[1][-1]/fs, cond_params) * np.ones(target_lens[2])
         ))
 
         # add force offset
-        force_standard += cond_params['target_offset']
+        force += cond_params['target_offset']
 
         # scale force from screen units to Newtons
-        force_standard *= cond_params['force_max']
+        force *= cond_params['force_max']
 
         # concatenate time samples and convert to seconds
-        t_standard = np.hstack(xi) / fs_standard
-
-        # resample time and force vectors at desired sample rate
-        # this ensures a consistent relationship between the sample rates and lengths of the time vectors
-        t = np.linspace(t_standard[0], t_standard[-1], int(round(len(t_standard) * fs/fs_standard)))
-
-        force = np.interp(t, t_standard, force_standard)
+        t = np.hstack(xi) / fs
 
         # round time to maximum temporal precision
         t = t.round(int(np.ceil(np.log10(fs))))
