@@ -85,20 +85,26 @@ class BehaviorBlock(dj.Manual):
         metadata_path = os.path.join(os.path.dirname(__file__), '..', 'metadata', '')
         behavior_block_df = pd.read_csv(metadata_path + monkey.lower() + '_behavior_block.csv')
 
+        # ensure proper session date format
+        behavior_block_df['session_date'] = pd.to_datetime(behavior_block_df['session_date']).dt.strftime('%Y-%m-%d')
+
         # convert dataframe to behavior block keys (remove secondary attributes)
-        behavior_block_key = behavior_block_df\
-            .drop(['arm_posture_id', 'save_tag'], axis=1)\
+        new_block_keys = behavior_block_df \
+            .drop(['arm_posture_id', 'save_tag'], axis=1) \
             .to_dict(orient='records')
 
         # prepend dataframe index to key
-        behavior_block_key = [(idx, key) for idx, key in enumerate(behavior_block_key)]
+        new_block_keys = [(idx, key) for idx, key in enumerate(new_block_keys)]
 
         # filter keys by those in behavior table but not in behavior block table
-        behavior_block_key = [(idx, key) for idx, key in behavior_block_key
-            if (pacman_acquisition.Behavior & key) and not (self & key)]
+        old_block_keys = (BehaviorBlock & {'monkey': monkey}).fetch('KEY')
+        [key.update(session_date=str(key['session_date'])) for key in old_block_keys];
+
+        new_block_keys = [(idx, key) for idx, key in new_block_keys
+            if (pacman_acquisition.Behavior & key) and key not in old_block_keys]
 
         # insert entries
-        for idx, key in behavior_block_key:
+        for idx, key in new_block_keys:
 
             # insert behavior block
             self.insert1(dict(key, arm_posture_id=behavior_block_df.loc[idx, 'arm_posture_id']))
