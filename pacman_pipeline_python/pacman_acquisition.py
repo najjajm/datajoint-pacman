@@ -363,6 +363,10 @@ class ConditionParams(dj.Lookup):
     @classmethod
     def target_force_profile(self, condition_id: int, fs: int):
 
+        # ensure integer frequency
+        assert fs == round(fs), 'Non-integer frequency'
+        fs = int(fs)
+
         # join condition table with part tables
         joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
 

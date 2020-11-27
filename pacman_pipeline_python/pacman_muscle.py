@@ -207,7 +207,7 @@ class EmgEnvelope(dj.Computed):
         behavior_condition_time = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
 
         # make ephys condition time vector
-        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+        fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
         ephys_condition_time, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
 
         # fetch raw emg data
