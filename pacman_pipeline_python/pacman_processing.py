@@ -362,24 +362,28 @@ class EphysTrialAlignment(dj.Computed):
 
         if behavior_alignment['valid_alignment']:
 
-            # fetch condition time
-            t = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+            # fetch behavior and ephys sample rates
+            fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
+            fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
 
-            # sample rates
-            fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
-            fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
+            # fetch condition time (behavior time base)
+            t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
 
-            # alignment index
-            t_idx_beh = (fs_beh * t).astype(int)
-            zero_idx = np.argmax(t_idx_beh == 0)
-            align_idx = behavior_alignment['behavior_alignment'][zero_idx]
+            # make condition time in ephys time base
+            t_ephys, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
 
-            # ephys alignment indices
-            t_idx_ephys = (fs_ephys * np.linspace(t[0], t[-1], 1+int(round(fs_ephys * np.ptp(t))))).astype(int)
-            ephys_alignment = t_idx_ephys + align_idx * round(fs_ephys/fs_beh)
-            ephys_alignment += (EphysTrialStart & key).fetch1('ephys_trial_start')
+            # convert time vectors to samples
+            x_beh = np.round(fs_beh * t_beh).astype(int)
+            x_ephys = np.round(fs_ephys * t_ephys).astype(int)
 
-            key.update(ephys_alignment=ephys_alignment)
+            # extract alignment index from behavior alignment indices and convert to ephys time base
+            align_idx_beh = behavior_alignment['behavior_alignment'][x_beh==0]
+            align_idx_ephys = int(align_idx_beh * round(fs_ephys/fs_beh))
+
+            # fetch ephys trial start index and make ephys alignment indices
+            ephys_trial_start = (EphysTrialStart & key).fetch1('ephys_trial_start')
+            
+            key.update(ephys_alignment=(x_ephys + align_idx_ephys + ephys_trial_start))
 
         self.insert1(key)
 
