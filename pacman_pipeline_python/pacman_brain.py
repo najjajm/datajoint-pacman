@@ -80,17 +80,19 @@ class NeuronRate(dj.Computed):
 
     def make(self, key):
 
-        # fetch behavior sample rate and time vector
-        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        # fetch behavior and ephys sample rates
+        fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
+        fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
+
+        # fetch condition time (behavior time base)
         t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
         n_samples = len(t_beh)
 
+        # make condition time in ephys time base
+        t_ephys, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)        
+
         # fetch spike rasters (ephys time base)
         spike_raster_keys = (NeuronSpikeRaster & key).fetch(as_dict=True)
-
-        # resample time to ephys time base
-        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-        t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+int(round(fs_ephys * np.ptp(t_beh))))
 
         # rebin spike raster to behavior time base 
         time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)

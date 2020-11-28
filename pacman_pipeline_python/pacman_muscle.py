@@ -203,12 +203,15 @@ class EmgEnvelope(dj.Computed):
 
     def make(self, key):
 
-        # fetch behavior condition time vector
-        behavior_condition_time = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
-
-        # make ephys condition time vector
+        # fetch behavior and ephys sample rates
+        fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
         fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
-        ephys_condition_time, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
+
+        # fetch condition time (behavior time base)
+        t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
+
+        # make condition time in ephys time base
+        t_ephys, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
 
         # fetch raw emg data
         emg_attributes = (Emg & key).fetch(as_dict=True)
@@ -233,7 +236,7 @@ class EmgEnvelope(dj.Computed):
 
         # resample emg to behavior time base
         [emg_attr.update(
-            emg_envelope=np.interp(behavior_condition_time, ephys_condition_time, emg_attr['emg_envelope'])
+            emg_envelope=np.interp(t_beh, t_ephys, emg_attr['emg_envelope'])
         ) for emg_attr in emg_attributes];
 
         # insert emg envelopes
@@ -258,17 +261,19 @@ class MotorUnitRate(dj.Computed):
 
     def make(self, key):
 
-        # fetch behavior sample rate and time vector
-        fs_beh = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+        # fetch behavior and ephys sample rates
+        fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
+        fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
+
+        # fetch condition time (behavior time base)
         t_beh = (pacman_acquisition.Behavior.Condition & key).fetch1('condition_time')
         n_samples = len(t_beh)
 
+        # make condition time in ephys time base
+        t_ephys, _ = pacman_acquisition.ConditionParams.target_force_profile(key['condition_id'], fs_ephys)
+
         # fetch spike rasters (ephys time base)
         spike_raster_keys = (MotorUnitSpikeRaster & key).fetch(as_dict=True)
-
-        # resample time to ephys time base
-        fs_ephys = (acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate')
-        t_ephys = np.linspace(t_beh[0], t_beh[-1], 1+int(round(fs_ephys * np.ptp(t_beh))))
 
         # rebin spike raster to behavior time base 
         time_bin_edges = np.append(t_beh, t_beh[-1]+(1+np.arange(2))/fs_beh) - 1/(2*fs_beh)
