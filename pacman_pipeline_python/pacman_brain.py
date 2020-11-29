@@ -11,6 +11,13 @@ from . import pacman_acquisition, pacman_processing
 from sklearn import decomposition
 from typing import List, Tuple
 
+import plotly.graph_objects as go
+import dash_core_components as dcc
+import dash_html_components as html
+from jupyter_dash import JupyterDash
+from dash.dependencies import Input, Output
+from plotly.subplots import make_subplots
+
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_brain')
 
 # =======
@@ -327,5 +334,172 @@ class NeuronPsth(dj.Computed):
 
         # return sorted unit keys
         return fig, np.array(unit_keys)[unit_order]
+
+
+    def dash_app(self, mode='inline'):
+
+        # === SETUP ===
+
+        # session dates
+        session_dates = (acquisition.Session & self).fetch('session_date', as_dict=True)
+        [date.update(session_date=date['session_date'].strftime('%Y-%m-%d')) for date in session_dates];
+
+        # get common condition attributes
+        condition_attributes = self.get_common_conditions(include_time=True, include_force=True)
+
+        # maximum force
+        max_force = np.array([
+            cond_attr['condition_force'].max() for cond_attr in condition_attributes
+        ]).max()
+
+        # === APP LAYOUT ===
+
+        app = JupyterDash(__name__)
+        app.layout = html.Div([
+            html.H1('PSTH Explorer', style={'color':'white'}),
+            dcc.Graph(id='graph'),
+            html.Div([
+                dcc.Dropdown(
+                    id='condition-dropdown',
+                    options=[
+                        {'label': cond_attr['condition_label'], 'value': cond_idx}
+                        for cond_idx, cond_attr in enumerate(condition_attributes)
+                    ],
+                    value=0,
+                    disabled=False,
+                ),
+                dcc.Slider(
+                    id='session-slider',
+                    min=0,
+                    max=len(session_dates)-1,
+                    value=0,
+                    marks={i: str(i) for i in range(len(session_dates))},
+                    disabled=False,
+                ),
+            ]),
+        ])
+
+        # === CALLBACKS ===
+
+        # Update graph
+        @app.callback(
+            Output('graph', 'figure'),
+            [
+                Input('session-slider', 'value'),
+                Input('condition-dropdown', 'value'),
+            ]
+        )
+        def update_figure(session_idx, condition_idx):
+
+            # fetch psth attributes
+            cond_attr = condition_attributes[condition_idx]
+            psth_attributes = (self & session_dates[session_idx] & cond_attr).fetch(as_dict=True)
+
+            # maximum firing rate
+            max_rate = np.array([
+                (psth_attr['neuron_psth'] + psth_attr['neuron_psth_sem']).max() for psth_attr in psth_attributes
+            ]).max()
+
+            # make figure
+            n_units = len(psth_attributes)
+            n_columns = int(np.ceil(np.sqrt(n_units)))
+            n_rows = int(np.ceil(n_units/n_columns))
+
+            # add a row for the condition force profile
+            n_rows += 1
+
+            fig = make_subplots(
+                rows=n_rows, 
+                cols=n_columns, 
+                shared_xaxes='all',
+                shared_yaxes='rows',
+                subplot_titles=(['target force'] * n_columns) \
+                    + ['Neuron {}'.format(psth_attr['neuron_id']) for psth_attr in psth_attributes]
+            )
+
+            # plot forces
+            for nd_idx in np.ndindex((1, n_columns)):
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=cond_attr['condition_time'],
+                        y=cond_attr['condition_force'],
+                        showlegend=False,
+                        line=dict(color='FireBrick'),
+                        name='target force',
+                    ),
+                    row=1+nd_idx[0],
+                    col=1+nd_idx[1],
+                )
+
+                # update axes
+                fig.update_yaxes(
+                    title_text=('force (N)' if nd_idx[1]==0 else None),
+                    range=[-2, int(np.ceil(1.15*max_force))],
+                    row=1+nd_idx[0],
+                    col=1+nd_idx[1],
+                )
+
+            # plot PSTHs
+            valid_nd_indices = list(np.ndindex((n_rows-1, n_columns)))[:n_units]
+
+            for nd_idx, psth_attr in zip(np.ndindex((n_rows-1, n_columns)), psth_attributes):
+
+                # standard error
+                for a in [-1, 1]:
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x=cond_attr['condition_time'],
+                            y=psth_attr['neuron_psth'] + a * psth_attr['neuron_psth_sem'],
+                            legendgroup=1,
+                            name='standard error',
+                            showlegend=(True if a==-1 and nd_idx==(0,0) else False),
+                            line=dict(color='LightSkyBlue'),
+                            fill=(None if a==-1 else 'tonexty'),
+                        ),
+                        row=2+nd_idx[0],
+                        col=1+nd_idx[1],
+                    )
+
+                # mean
+                fig.add_trace(
+                    go.Scatter(
+                        x=cond_attr['condition_time'],
+                        y=psth_attr['neuron_psth'],
+                        legendgroup=0,
+                        name='mean',
+                        showlegend=(True if nd_idx==(0,0) else False),
+                        line=dict(color='RoyalBlue'),
+                    ),
+                    row=2+nd_idx[0],
+                    col=1+nd_idx[1],
+                )
+
+                # update axes
+                fig.update_xaxes(
+                    title_text=('time (s)' if (nd_idx[0]+1,nd_idx[1]) not in valid_nd_indices else None),
+                    row=2+nd_idx[0], 
+                    col=1+nd_idx[1],
+                )
+                fig.update_yaxes(
+                    title_text=('rate (spks/s)' if nd_idx[1]==0 else None),
+                    range=[0, int(np.ceil(max_rate/10)*10)],
+                    row=2+nd_idx[0],
+                    col=1+nd_idx[1],
+                )
+
+            # update figure layout
+            fig.update_layout(
+                height=800, 
+                width=1200, 
+                legend_traceorder='reversed', 
+                title_text='{}'.format(session_dates[session_idx]['session_date'])
+            )
+
+            return fig
+
+        # === RUN APP ===
+        app.run_server(mode=mode)
 
 
