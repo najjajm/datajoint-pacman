@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import neo
 import matplotlib.pyplot as plt
+import plotly.express as px
 from churchland_pipeline_python import lab, acquisition, processing, reference
 from churchland_pipeline_python.utilities import datajointutils
 from . import pacman_acquisition, pacman_processing
@@ -67,6 +68,58 @@ class Emg(dj.Imported):
 
         # insert emg signal keys
         self.insert(keys)
+
+    # =================
+    def plot_trial(
+        self,
+        suppress_warning: bool=False,
+    ) -> None:
+
+        # ensure one trial selected
+        trial_table = pacman_acquisition.Behavior.Trial
+
+        if len(trial_table & self) > 1:
+
+            trial_key = dj.U(*trial_table.primary_key) \
+                .aggr(self, rnd='RAND()') \
+                .fetch('KEY', order_by='rnd', limit=1)[0]
+
+            if not suppress_warning:
+
+                print(
+                    'Randomly selected session {}, condition ID {}, trial {}' \
+                        .format(trial_key['session_date'], trial_key['condition_id'], trial_key['trial'])
+                )
+
+            self = self & trial_key
+
+        else:
+
+            trial_key = (trial_table & self).fetch1('KEY')
+        
+        # make condition time vector
+        fs = int((acquisition.EphysRecording & self).fetch1('ephys_recording_sample_rate'))
+        t, _ = pacman_acquisition.ConditionParams.target_force_profile(trial_key['condition_id'], fs)
+
+        # fetch emg attributes
+        emg_attributes = self.fetch(as_dict=True)
+
+        # append time vector
+        [emg_attr.update(t=t) for emg_attr in emg_attributes];
+
+        # filter EMG
+        [emg_attr.update(
+            emg_signal=processing.Filter.Butterworth().filt(emg_attr['emg_signal'], fs, order=2, low_cut=500)
+            ) for emg_attr in emg_attributes];
+
+        # flatten attributes and import to DataFrame
+        df = pd.DataFrame.from_records(datajointutils.flatten_blobs(emg_attributes, ['t', 'emg_signal']))
+
+        # plot with plotly express
+        fig = px.line(df, x='t', y='emg_signal', facet_row='ephys_channel_idx', width=800, height=600)
+        fig.show()
+                
+
 
 
 @schema
