@@ -219,28 +219,15 @@ class NeuronPsth(dj.Computed):
         color_map='plasma'
         ):
 
-        # identify common conditions
-        common_conditions = (dj.U('condition_id').aggr(self, count='count(*)') \
-            & 'count={}'.format(len(processing.Neuron & self))).proj()
-
-        # fetch sorted condition keys
-        condition_keys = (pacman_acquisition.ConditionParams \
-            * pacman_acquisition.ConditionParams().proj_label(n_sigfigs=2) \
-            * pacman_acquisition.ConditionParams().proj_rank() \
-            & common_conditions) \
-                .fetch('KEY', order_by='condition_rank')
-
-        # fetch condition time and force vectors
-        condition_attr = [(pacman_acquisition.Behavior.Condition & cond_key & self) \
-            .fetch('condition_time', 'condition_force', limit=1, as_dict=True)[0] \
-            for cond_key in condition_keys]
+        # get common condition attributes
+        condition_attributes = self.get_common_conditions(include_time=True, include_force=True)
 
         # fetch neuron keys
         unit_keys = (processing.Neuron & self).fetch('KEY', order_by=['session_date', 'neuron_id'])
 
         # fetch psths and stack across units
-        psths = [np.stack((self & cond_key).fetch('neuron_psth', order_by=['session_date', 'neuron_id'])) \
-            for cond_key in condition_keys]
+        psths = [np.stack((self & cond_attr).fetch('neuron_psth', order_by=['session_date', 'neuron_id'])) \
+            for cond_attr in condition_attributes]
 
         # soft-normalize
         if soft_normalize is not None:
@@ -266,13 +253,13 @@ class NeuronPsth(dj.Computed):
 
         # time range and width ratios
         cmap_prop = 0.25
-        time_range = [x['condition_time'].ptp() for x in condition_attr]
+        time_range = [x['condition_time'].ptp() for x in condition_attributes]
         time_range = time_range + [np.array(time_range).min() * cmap_prop]
         width_ratios = time_range / sum(time_range)
 
         # setup figure
         n_rows = 2
-        n_columns = 1 + len(condition_keys)
+        n_columns = 1 + len(condition_attributes)
 
         fig = plt.figure(figsize=fig_size, constrained_layout=True)
         gs = fig.add_gridspec(ncols=n_columns, nrows=n_rows, width_ratios=width_ratios, height_ratios=[0.075, 0.925])
@@ -291,7 +278,7 @@ class NeuronPsth(dj.Computed):
                 ax = fig.add_subplot(gs[nd_idx])
             
                 # condition time vector
-                t = condition_attr[nd_idx[1]]['condition_time']
+                t = condition_attributes[nd_idx[1]]['condition_time']
 
                 # x-tick position indices
                 x_tick_pos = [iidx for iidx, ti in enumerate(t) if ti==round(ti)]
@@ -304,7 +291,7 @@ class NeuronPsth(dj.Computed):
                 if nd_idx[0] == 0:
 
                     # plot condition force profile
-                    ax.plot(t, condition_attr[nd_idx[1]]['condition_force'], c='k')
+                    ax.plot(t, condition_attributes[nd_idx[1]]['condition_force'], c='k')
 
                     # format axes
                     ax.set_xlim(t[[0, -1]])
