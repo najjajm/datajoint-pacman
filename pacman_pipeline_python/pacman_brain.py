@@ -362,7 +362,7 @@ class NeuronPsth(dj.Computed):
                 dcc.Dropdown(
                     id='condition-dropdown',
                     options=[
-                        {'label': cond_attr['condition_label'], 'value': cond_idx}
+                        {'label': 'Condition {}: '.format(cond_idx) + cond_attr['condition_label'], 'value': cond_idx}
                         for cond_idx, cond_attr in enumerate(condition_attributes)
                     ],
                     value=0,
@@ -413,8 +413,6 @@ class NeuronPsth(dj.Computed):
                 cols=n_columns, 
                 shared_xaxes='all',
                 shared_yaxes='rows',
-                subplot_titles=(['target force'] * n_columns) \
-                    + ['Neuron {}'.format(psth_attr['neuron_id']) for psth_attr in psth_attributes]
             )
 
             # plot forces
@@ -445,6 +443,22 @@ class NeuronPsth(dj.Computed):
 
             for nd_idx, psth_attr in zip(np.ndindex((n_rows-1, n_columns)), psth_attributes):
 
+                # labels
+                fig.add_trace(
+                    go.Scatter(
+                        x=[cond_attr['condition_time'][-1] - cond_attr['condition_time'].ptp() * 0.05],
+                        y=[max_rate],
+                        legendgroup=0,
+                        mode='text',
+                        name='neuron IDs',
+                        text='{}'.format(psth_attr['neuron_id']),
+                        textposition='bottom left',
+                        showlegend=(True if nd_idx==(0,0) else False),
+                    ),
+                    row=2+nd_idx[0],
+                    col=1+nd_idx[1],
+                )
+
                 # standard error
                 for a in [-1, 1]:
 
@@ -467,7 +481,7 @@ class NeuronPsth(dj.Computed):
                     go.Scatter(
                         x=cond_attr['condition_time'],
                         y=psth_attr['neuron_psth'],
-                        legendgroup=0,
+                        legendgroup=2,
                         name='mean',
                         showlegend=(True if nd_idx==(0,0) else False),
                         line=dict(color='RoyalBlue'),
@@ -483,7 +497,7 @@ class NeuronPsth(dj.Computed):
                     col=1+nd_idx[1],
                 )
                 fig.update_yaxes(
-                    title_text=('rate (spks/s)' if nd_idx[1]==0 else None),
+                    title_text=('spks/s' if nd_idx[1]==0 else None),
                     range=[0, int(np.ceil(max_rate/10)*10)],
                     row=2+nd_idx[0],
                     col=1+nd_idx[1],
