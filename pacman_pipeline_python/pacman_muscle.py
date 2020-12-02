@@ -203,8 +203,7 @@ class EmgEnvelope(dj.Computed):
 
     def make(self, key):
 
-        # fetch behavior and ephys sample rates
-        fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
+        # fetch ephys sample rates
         fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
 
         # fetch condition time (behavior time base)
