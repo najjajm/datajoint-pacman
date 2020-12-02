@@ -5,6 +5,9 @@ from churchland_pipeline_python import lab, acquisition, equipment, reference, p
 from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
 from functools import reduce
+from typing import Tuple, List
+
+DataJointTable = dj.user_tables.OrderedClass
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_acquisition')
 
@@ -255,6 +258,73 @@ class ConditionParams(dj.Lookup):
         ranked_self = reduce(lambda x,y: x+y, target_ranks)
 
         return ranked_self
+
+
+    def get_common_attributes(
+        self, 
+        table: DataJointTable, 
+        include: List[str]=['label','rank'],
+        n_sigfigs: int=4,
+    ) -> List[dict]:
+        """Fetches most common attributes in the input table.
+
+        Args:
+            table (DataJointTable): DataJoint table to use in the restriction
+            include (List[str], optional): Attributes to project into the condition table. 
+                Options: ['label','rank','time','force']. Defaults to ['label','rank'].
+            n_sigfigs (int, optional): Number of significant figures include in label. Defaults to 4.
+
+        Returns:
+            condition_attributes (List[dict]): list of attributes
+        """
+
+        # count condition frequency in the table
+        condition_counts = self.aggr(table, count='count(*)')
+
+        # restrict by most counts
+        max_count = dj.U().aggr(condition_counts, count='max(count)').fetch1('count')
+        self = self & (condition_counts & 'count={}'.format(max_count)).proj()
+
+        if include is not None:
+
+            # project label
+            self = self * ConditionParams().proj_label(n_sigfigs=n_sigfigs) if 'label' in include else self
+
+            # project rank
+            self = self * ConditionParams().proj_rank() if 'rank' in include else self
+
+            # fetch attributes
+            condition_attributes = self.fetch(as_dict=True, order_by=('condition_rank' if 'rank' in include else None))
+
+            # aggregate target attributes
+            target_attributes = []
+            target_attributes.append('condition_time') if 'time' in include else None
+            target_attributes.append('condition_force') if 'force' in include else None
+
+            if any(target_attributes):
+
+                # ensure matched sample rates across sessions
+                behavior_recordings = acquisition.BehaviorRecording & table
+                unique_sample_rates = dj.U('behavior_recording_sample_rate') & behavior_recordings
+                assert len(unique_sample_rates) == 1, 'Mismatched sample rates!'
+
+                fs = unique_sample_rates.fetch1('behavior_recording_sample_rate')
+
+                # join condition table with secondary attributes
+                for cond_attr in condition_attributes:
+
+                    t, f = ConditionParams.target_force_profile(cond_attr['condition_id'], fs)
+
+                    if 'time' in include:
+                        cond_attr.update(condition_time=t)
+
+                    if 'force' in include:
+                        cond_attr.update(condition_force=f)
+
+        else:
+            condition_attributes = self.fetch(as_dict=True)
+
+        return condition_attributes
 
         
     @classmethod
