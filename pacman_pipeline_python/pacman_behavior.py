@@ -71,3 +71,49 @@ class Force(dj.Computed):
 
         # insert aligned forces
         self.insert(key)
+
+
+# =======
+# LEVEL 1
+# =======
+
+@schema
+class ForceMean(dj.Computed):
+    definition = """
+    # Trial-averaged forces
+    -> pacman_processing.AlignmentParams
+    -> pacman_processing.BehaviorBlock
+    -> pacman_processing.BehaviorQualityParams
+    -> pacman_processing.FilterParams
+    ---
+    force_raw_mean:  longblob # trial-averaged raw (online), aligned force signal (V)
+    force_raw_sem:   longblob # raw mean force standard error
+    force_filt_mean: longblob # trial-averaged filtered, aligned, and calibrated force (N)
+    force_filt_sem:  longblob # filtered mean force standard error
+    """
+
+    # limit conditions with good trials
+    key_source = pacman_processing.AlignmentParams \
+        * pacman_processing.BehaviorBlock \
+        * pacman_processing.BehaviorQualityParams \
+        * pacman_processing.FilterParams \
+        & Force \
+        & (pacman_processing.GoodTrial & 'good_trial')
+
+    def make(self, key):
+
+        # fetch single-trial forces
+        force_raw, force_filt = (Force & key & (pacman_processing.GoodTrial & 'good_trial')).fetch('force_raw', 'force_filt')
+        force_raw = np.stack(force_raw)
+        force_filt = np.stack(force_filt)
+
+        # update key with mean and standard error
+        key.update(
+            force_raw_mean=force_raw.mean(axis=0),
+            force_raw_sem=force_raw.std(axis=0, ddof=(1 if force_raw.shape[0] > 1 else 0))/np.sqrt(force_raw.shape[0]),
+            force_filt_mean=force_filt.mean(axis=0),
+            force_filt_sem=force_filt.std(axis=0, ddof=(1 if force_filt.shape[0] > 1 else 0))/np.sqrt(force_filt.shape[0]),
+        )
+
+        # insert forces
+        self.insert1(key)
