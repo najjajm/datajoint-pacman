@@ -256,8 +256,7 @@ class EmgEnvelope(dj.Computed):
 
     def make(self, key):
 
-        # fetch behavior and ephys sample rates
-        fs_beh = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
+        # fetch ephys sample rates
         fs_ephys = int((acquisition.EphysRecording & key).fetch1('ephys_recording_sample_rate'))
 
         # fetch condition time (behavior time base)
@@ -441,41 +440,3 @@ class MotorUnitPsth(dj.Computed):
 
         # insert motor unit PSTH
         self.insert1(key)
-
-    
-    def get_common_conditions(
-        self,
-        include_time: bool=False,
-        include_force: bool=False,
-        n_sigfigs: int=2,
-    ) -> List[dict]:
-        """Retrieves the greatest common set of condition attributes across the population.
-        By default, returns the condition IDs along with their label and rank.
-        Can optionally include the condition time and/or force vectors."""
-
-        # identify common conditions across recording sessions
-        motor_units_per_condition = dj.U('condition_id').aggr(self, count='count(*)')
-        common_conditions = (motor_units_per_condition & 'count={}'.format(len(processing.MotorUnit & self))).proj()
-
-        # condition table with labels and ranks
-        condition_table = pacman_acquisition.ConditionParams().proj_rank() \
-            * pacman_acquisition.ConditionParams().proj_label(n_sigfigs=n_sigfigs) \
-            & common_conditions
-
-        # aggregate secondary attributes to include
-        secondary_attributes = []
-        secondary_attributes.append('condition_time') if include_time else None
-        secondary_attributes.append('condition_force') if include_force else None
-
-        if any(secondary_attributes):
-
-            # ensure matched sample rates across sessions
-            behavior_recordings = acquisition.BehaviorRecording & self
-            assert len(dj.U('behavior_recording_sample_rate') & behavior_recordings) == 1, 'Mismatched sample rates!'
-
-            # join condition table with secondary attributes
-            session_conditions = pacman_acquisition.Behavior.Condition & self
-            condition_table = condition_table * (dj.U('condition_id', *secondary_attributes) & session_conditions)
-
-        # fetch and return ordered condition attributes
-        return condition_table.fetch('KEY', order_by='condition_rank')
