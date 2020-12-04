@@ -175,6 +175,7 @@ class NeuronPsth(dj.Computed):
         )
 
         # insert neuron PSTH
+<<<<<<< HEAD
         self.insert1(key)
 
 
@@ -517,3 +518,6 @@ class NeuronPsth(dj.Computed):
         app.run_server(mode=mode)
 
 
+=======
+        self.insert1(key)
+>>>>>>> main
