@@ -373,7 +373,7 @@ class EmgEnvelopeMean(dj.Computed):
             condition_ids (Any): Condition IDs for each sample in X
             condition_times (Any): Condition time value for each sample in X
             condition_keys (List[dict]): List of condition keys in the dataset
-            emg_keys (List[dict]): List of emg channel keys in the dataset
+            emg_channel_keys (List[dict]): List of emg channel keys in the dataset
         """
 
         # ensure that there is one EMG envelop per channel/condition
@@ -388,7 +388,7 @@ class EmgEnvelopeMean(dj.Computed):
         condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time'])
 
         # get emg channel keys
-        emg_keys = (acquisition.EmgChannelGroup.Channel & self).fetch('KEY')
+        emg_channel_keys = (acquisition.EmgChannelGroup.Channel & self).fetch('KEY')
 
         # remove standard errors from table
         self = self.proj('emg_envelope_mean')
@@ -415,7 +415,7 @@ class EmgEnvelopeMean(dj.Computed):
                 cond_key.update(condition_time=t_new)
 
                 # fetch emg data
-                emg_data = [(self & cond_key & unit_key).fetch1() for unit_key in emg_keys]
+                emg_data = [(self & cond_key & chan_key).fetch1() for chan_key in emg_channel_keys]
 
                 # interpolate emgs to new timebase as needed
                 if fs is not None:
@@ -429,7 +429,7 @@ class EmgEnvelopeMean(dj.Computed):
             emgs = []
             for cond_key in condition_keys:
                 emgs.append(np.stack(
-                    [(self & cond_key & unit_key).fetch1('emg_envelope_mean') for unit_key in emg_keys]
+                    [(self & cond_key & chan_key).fetch1('emg_envelope_mean') for chan_key in emg_channel_keys]
                 ))
 
         # label each time step in concatenated population vector with condition index
@@ -461,12 +461,12 @@ class EmgEnvelopeMean(dj.Computed):
             # aggregate data into a dict
             emg_data = []
             for cond_key, X in zip(condition_keys, emgs):
-                for unit_key, Xi in zip(emg_keys, X):
-                    emg_data.append(dict(cond_key, **unit_key, emg_envelope_mean=Xi))
+                for chan_key, Xi in zip(emg_channel_keys, X):
+                    emg_data.append(dict(cond_key, **chan_key, emg_envelope_mean=Xi))
 
             emgs = emg_data
 
-        return emgs, condition_ids, condition_times, condition_keys, emg_keys
+        return emgs, condition_ids, condition_times, condition_keys, emg_channel_keys
 
 
 @schema
@@ -532,7 +532,7 @@ class MotorUnitPsth(dj.Computed):
             condition_ids (Any): Condition IDs for each sample in X
             condition_times (Any): Condition time value for each sample in X
             condition_keys (List[dict]): List of condition keys in the dataset
-            motor_unit_keys (List[dict]): List of motor unit keys in the dataset
+            motor_chan_keys (List[dict]): List of motor unit keys in the dataset
         """
 
         # ensure that there is one PSTH per motor unit/condition
@@ -547,7 +547,7 @@ class MotorUnitPsth(dj.Computed):
         condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time'])
 
         # get motor unit keys
-        motor_unit_keys = (processing.MotorUnit & self).fetch('KEY')
+        motor_chan_keys = (processing.MotorUnit & self).fetch('KEY')
 
         # remove standard errors from table
         self = self.proj('motor_unit_psth')
@@ -574,7 +574,7 @@ class MotorUnitPsth(dj.Computed):
                 cond_key.update(condition_time=t_new)
 
                 # fetch psth data
-                psth_data = [(self & cond_key & unit_key).fetch1() for unit_key in motor_unit_keys]
+                psth_data = [(self & cond_key & chan_key).fetch1() for chan_key in motor_chan_keys]
 
                 # interpolate psths to new timebase as needed
                 if fs is not None:
@@ -588,7 +588,7 @@ class MotorUnitPsth(dj.Computed):
             psths = []
             for cond_key in condition_keys:
                 psths.append(np.stack(
-                    [(self & cond_key & unit_key).fetch1('motor_unit_psth') for unit_key in motor_unit_keys]
+                    [(self & cond_key & chan_key).fetch1('motor_unit_psth') for chan_key in motor_chan_keys]
                 ))
 
         # label each time step in concatenated population vector with condition index
@@ -620,9 +620,9 @@ class MotorUnitPsth(dj.Computed):
             # aggregate data into a dict
             psth_data = []
             for cond_key, X in zip(condition_keys, psths):
-                for unit_key, Xi in zip(motor_unit_keys, X):
-                    psth_data.append(dict(cond_key, **unit_key, motor_unit_psth=Xi))
+                for chan_key, Xi in zip(motor_chan_keys, X):
+                    psth_data.append(dict(cond_key, **chan_key, motor_unit_psth=Xi))
 
             psths = psth_data
 
-        return psths, condition_ids, condition_times, condition_keys, motor_unit_keys
+        return psths, condition_ids, condition_times, condition_keys, motor_chan_keys
