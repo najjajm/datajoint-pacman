@@ -168,5 +168,3 @@ class NeuronPsth(dj.Computed):
 
         # insert neuron PSTH
         self.insert1(key)
-
-
