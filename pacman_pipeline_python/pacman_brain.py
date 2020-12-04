@@ -189,7 +189,8 @@ class NeuronPsth(dj.Computed):
         ):
 
         # get common condition attributes
-        condition_attributes = self.get_common_conditions(include_time=True, include_force=True)
+        condition_attributes = pacman_acquisition.ConditionParams() \
+            .get_common_attributes(self, n_sigfigs=2, include=['label','rank','time','force'])
 
         # fetch neuron keys
         unit_keys = (processing.Neuron & self).fetch('KEY', order_by=['session_date', 'neuron_id'])
@@ -307,7 +308,8 @@ class NeuronPsth(dj.Computed):
         [date.update(session_date=date['session_date'].strftime('%Y-%m-%d')) for date in session_dates];
 
         # get common condition attributes
-        condition_attributes = self.get_common_conditions(include_time=True, include_force=True)
+        condition_attributes = pacman_acquisition.ConditionParams() \
+            .get_common_attributes(self, n_sigfigs=2, include=['label','rank','time','force'])
 
         # maximum force
         max_force = np.array([
