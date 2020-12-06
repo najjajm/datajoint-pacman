@@ -206,7 +206,7 @@ class NeuronPsth(dj.Computed):
             + (', '.join(['{}'] * len(remaining_keys))).format(*remaining_keys)
 
         # get condition keys
-        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time'])
+        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time','force'])
 
         # get neuron keys
         neuron_keys = (processing.Neuron & self).fetch('KEY')

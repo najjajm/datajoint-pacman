@@ -385,7 +385,7 @@ class EmgEnvelopeMean(dj.Computed):
             + (', '.join(['{}'] * len(remaining_keys))).format(*remaining_keys)
 
         # get condition keys
-        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time'])
+        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time','force'])
 
         # get emg channel keys
         emg_channel_keys = (acquisition.EmgChannelGroup.Channel & self).fetch('KEY')
@@ -544,7 +544,7 @@ class MotorUnitPsth(dj.Computed):
             + (', '.join(['{}'] * len(remaining_keys))).format(*remaining_keys)
 
         # get condition keys
-        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time'])
+        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time','force'])
 
         # get motor unit keys
         motor_chan_keys = (processing.MotorUnit & self).fetch('KEY')
