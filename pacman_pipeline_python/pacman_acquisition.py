@@ -1,6 +1,7 @@
 import datajoint as dj
 import os, re, inspect
 import numpy as np
+import colorcet as cc
 from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
 from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
@@ -504,6 +505,109 @@ class ConditionParams(dj.Lookup):
         t = t.round(int(np.ceil(np.log10(fs))))
 
         return t, force
+
+
+    # update condition keys with color scales and endpoint colors
+    @staticmethod
+    def colorize_conditions(
+        condition_keys: List[dict],
+        alpha_range: tuple=(0,1),
+        bw_range: tuple=(0.1,0.9)
+    ) -> List[dict]:
+        """Add color scales and endpoint colors to condition keys."""
+
+        # alpha range (for indicating time)
+        alpha_range = np.array(alpha_range)
+
+        # black-white range (for indicating start/stop amplitude)
+        bw_range = np.array(bw_range)
+
+        # hue sequence for condition types
+        condition_hue_sequence = dict(
+            Static=cc.cm.linear_blue_5_95_c73_r,
+            Ramp=cc.cm.linear_green_5_95_c69_r,
+            Sine=cc.cm.fire_r,
+            Chirp=cc.cm.linear_bmw_5_95_c86_r
+        )
+
+        # hue sequence for endpoints
+        endpoint_hue_sequence = cc.cm.linear_grey_0_100_c0
+
+        # force range across all conditions
+        force_range = np.array([
+            np.array([cond_key['condition_force'].min() for cond_key in condition_keys]).min(),
+            np.array([cond_key['condition_force'].max() for cond_key in condition_keys]).max()
+        ])
+
+        # function to linearly sample hue sequences based on set of unique values
+        def linear_sample_value_set(x):
+            return (x - x.min()) / (x.ptp() if x.ptp() != 0 else 1) * (len(x)-1)/(len(x)+1) + 1/(len(x)+1)
+
+        for condition_type, hue_sequence in condition_hue_sequence.items():
+
+            # filter condition keys by type
+            cond_set_keys = list(filter(lambda x: x['condition_label'].startswith(condition_type), condition_keys))
+
+            # infer target frequency from condition rank
+            if condition_type == 'Static':
+
+                target_freqs = np.array([0] * len(cond_set_keys))
+
+            elif condition_type == 'Ramp':
+
+                # ramp "frequency" ~ rate in Newtons per second
+                target_freqs = np.array([eval(re.search('.*_(.*)_.*', cond_key['condition_rank']).group(1)) \
+                    for cond_key in cond_set_keys])
+
+            elif condition_type == 'Sine':
+
+                target_freqs = np.array([eval(re.search('.*_(.*)_.*_.*', cond_key['condition_rank']).group(1)) \
+                    for cond_key in cond_set_keys])
+
+            elif condition_type == 'Chirp':
+
+                # only get the final frequency
+                target_freqs = np.array([eval(re.search('.*_.*_(.*)_.*_.*', cond_key['condition_rank']).group(1)) \
+                    for cond_key in cond_set_keys])
+
+            else:
+                print('target type {} unrecognized'.format(condition_type))
+                return
+
+            # determine hue sample position from target frequencies
+            unique_freqs = np.unique(target_freqs)
+            unique_sample_pos = linear_sample_value_set(unique_freqs)
+            freq_sample_map = {freq: pos for freq, pos in zip(unique_freqs, unique_sample_pos)}
+
+            hue_sample_pos = [freq_sample_map[freq] for freq in target_freqs]
+
+            color_maps = [np.round(255 * np.array(hue_sequence(samp_pos))).astype(int)[:3]
+                    for samp_pos, cond_key in zip(hue_sample_pos, cond_set_keys)]
+
+            # assign color scales from color maps
+            color_scales = [
+                [
+                    [0, 'rgba({},{},{},{})'.format(*(list(cm) + list(alpha_range[[0]])))],
+                    [1, 'rgba({},{},{},{})'.format(*(list(cm) + list(alpha_range[[1]])))],
+                ]
+                for cm in color_maps
+            ]    
+
+            # set initial and final marker colors based on force endpoints
+            force_endpts = np.array([cond_key['condition_force'][[0, -1]] for cond_key in cond_set_keys])
+            force_endpts_scaled = (force_endpts - force_range.min())/force_range.ptp() * bw_range.ptp() + bw_range.min()
+
+            endpoint_hues = [np.atleast_2d(np.round(255 * np.array(endpoint_hue_sequence(1-x))).astype(int))[:,:3]
+                for x in force_endpts_scaled.T]
+
+            init_marker_colors = ['rgb({},{},{})'.format(*end_hue) for end_hue in endpoint_hues[0]]
+            final_marker_colors = ['rgb({},{},{})'.format(*end_hue) for end_hue in endpoint_hues[1]]
+
+            # update keys with color scale and marker colors
+            [csk.update(color_scale=cs, init_marker_color=imc, final_marker_color=fmc) \
+                for csk, cs, imc, fmc in zip(cond_set_keys, color_scales, init_marker_colors, final_marker_colors)];
+
+        return condition_keys
 
 
 @schema
