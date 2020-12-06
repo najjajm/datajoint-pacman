@@ -2,6 +2,7 @@ import datajoint as dj
 import os, inspect, itertools
 import pandas as pd
 import numpy as np
+import scipy
 import neo
 import matplotlib.pyplot as plt
 import plotly.express as px
@@ -9,7 +10,7 @@ from churchland_pipeline_python import lab, acquisition, processing, reference
 from churchland_pipeline_python.utilities import datajointutils
 from . import pacman_acquisition, pacman_processing
 from sklearn import decomposition
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_muscle')
 
@@ -402,6 +403,125 @@ class EmgEnvelopeMean(dj.Computed):
         self.insert1(key)
 
 
+    def fetch_emgs(
+        self,
+        fs: int=None,
+        soft_normalize: int=None,
+        mean_center: bool=False,
+        output_format: str='array',
+    ) -> (Any, Any, Any, List[dict], List[dict]):
+        """Fetch trial-averaged EMG envelopes.
+
+        Args:
+            fs (int, optional): Sample rate. If not None, or if different sample rates across recordings, resamples EMGs to new rate. Defaults to None.
+            soft_normalize (int, optional): If not None, normalizes data with this value added to the signal range. Defaults to None.
+            mean_center (bool, optional): Whether to subtract the cross-condition mean from the responses. Defaults to False.
+            output_format (str, optional): Output data format. Options: 
+                * 'array' (N x CT) [Default]
+                * 'dict' (list of dictionaries per emg channel/condition)
+                * 'list' (list of N x T arrays, one per condition)
+
+        Returns:
+            emgs (Any): EMGs in specified output format
+            condition_ids (Any): Condition IDs for each sample in X
+            condition_times (Any): Condition time value for each sample in X
+            condition_keys (List[dict]): List of condition keys in the dataset
+            emg_channel_keys (List[dict]): List of emg channel keys in the dataset
+        """
+
+        # ensure that there is one EMG envelop per channel/condition
+        emg_condtion_keys = acquisition.EmgChannelGroup.Channel.primary_key + pacman_acquisition.ConditionParams.primary_key
+        remaining_keys = list(set(self.primary_key) - set(emg_condtion_keys))
+        
+        n_emgs_per_condition = dj.U(*emg_condtion_keys).aggr(self, count='count(*)')
+        assert not(n_emgs_per_condition & 'count > 1'), 'More than one EMG per emg channel and condition. Check ' \
+            + (', '.join(['{}'] * len(remaining_keys))).format(*remaining_keys)
+
+        # get condition keys
+        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time','force'])
+
+        # get emg channel keys
+        emg_channel_keys = (acquisition.EmgChannelGroup.Channel & self).fetch('KEY')
+
+        # remove standard errors from table
+        self = self.proj('emg_envelope_mean')
+
+        # ensure matched sample rates across the population and with desired sample rate
+        unique_sample_rates = (dj.U('behavior_recording_sample_rate') & (acquisition.BehaviorRecording & self)) \
+            .fetch('behavior_recording_sample_rate')
+
+        if len(unique_sample_rates) > 1 or (fs is not None and not all(unique_sample_rates == fs)):
+
+            # use modal sample rate if multiple in dataset
+            if fs is None:
+                fs_mode, _ = scipy.stats.mode(unique_sample_rates)
+                fs = fs_mode[0]
+
+            # join emg table with condition table
+            self *= pacman_acquisition.Behavior.Condition.proj(t_old='condition_time')
+
+            emgs = []
+            for cond_key in condition_keys:
+
+                # make new time vector
+                t_new, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_key['condition_id'], fs)
+                cond_key.update(condition_time=t_new)
+
+                # fetch emg data
+                emg_data = [(self & cond_key & chan_key).fetch1() for chan_key in emg_channel_keys]
+
+                # interpolate emgs to new timebase as needed
+                if fs is not None:
+                    [X.update(emg_envelope_mean=np.interp(t_new, X['t_old'], X['emg_envelope_mean'])) for X in emg_data];
+
+                # extract emgs and append to list
+                emgs.append(np.array([X['emg_envelope_mean'] for X in emg_data]))
+
+        else:
+            # fetch emgs and stack across units
+            emgs = []
+            for cond_key in condition_keys:
+                emgs.append(np.stack(
+                    [(self & cond_key & chan_key).fetch1('emg_envelope_mean') for chan_key in emg_channel_keys]
+                ))
+
+        # label each time step in concatenated population vector with condition index
+        condition_ids = [(cond_key['condition_id'], ) * X.shape[1] for cond_key, X in zip(condition_keys, emgs)]
+
+        # extract condition times from keys
+        condition_times = [cond_key['condition_time'] for cond_key in condition_keys]
+
+        # soft normalize
+        if soft_normalize is not None:
+            signal_range = np.hstack(emgs).ptp(axis=1, keepdims=True)
+            emgs = [X/(signal_range + soft_normalize) for X in emgs]
+
+        # mean-center
+        if mean_center:
+            signal_mean = np.hstack(emgs).mean(axis=1, keepdims=True)
+            emgs = [X - signal_mean for X in emgs]
+        
+        # format output
+        if output_format == 'array':
+
+            # stack output across conditions and times
+            emgs = np.hstack(emgs)
+            condition_ids = np.hstack(condition_ids)
+            condition_times = np.hstack(condition_times)
+
+        elif output_format == 'dict':
+
+            # aggregate data into a dict
+            emg_data = []
+            for cond_key, X in zip(condition_keys, emgs):
+                for chan_key, Xi in zip(emg_channel_keys, X):
+                    emg_data.append(dict(cond_key, **chan_key, emg_envelope_mean=Xi))
+
+            emgs = emg_data
+
+        return emgs, condition_ids, condition_times, condition_keys, emg_channel_keys
+
+
 @schema
 class MotorUnitPsth(dj.Computed):
     definition = """
@@ -440,3 +560,122 @@ class MotorUnitPsth(dj.Computed):
 
         # insert motor unit PSTH
         self.insert1(key)
+
+
+    def fetch_psths(
+        self,
+        fs: int=None,
+        soft_normalize: int=None,
+        mean_center: bool=False,
+        output_format: str='array',
+    ) -> (Any, Any, Any, List[dict], List[dict]):
+        """Fetch PSTHs.
+
+        Args:
+            fs (int, optional): Sample rate. If not None, or if different sample rates across recordings, resamples PSTHs to new rate. Defaults to None.
+            soft_normalize (int, optional): If not None, normalizes data with this value added to the firing rate range. Defaults to None.
+            mean_center (bool, optional): Whether to subtract the cross-condition mean from the responses. Defaults to False.
+            output_format (str, optional): Output data format. Options: 
+                * 'array' (N x CT) [Default]
+                * 'dict' (list of dictionaries per motor unit/condition)
+                * 'list' (list of N x T arrays, one per condition)
+
+        Returns:
+            psths (Any): PSTHs in specified output format
+            condition_ids (Any): Condition IDs for each sample in X
+            condition_times (Any): Condition time value for each sample in X
+            condition_keys (List[dict]): List of condition keys in the dataset
+            motor_chan_keys (List[dict]): List of motor unit keys in the dataset
+        """
+
+        # ensure that there is one PSTH per motor unit/condition
+        motor_unit_condtion_keys = processing.MotorUnit.primary_key + pacman_acquisition.ConditionParams.primary_key
+        remaining_keys = list(set(self.primary_key) - set(motor_unit_condtion_keys))
+        
+        n_psths_per_condition = dj.U(*motor_unit_condtion_keys).aggr(self, count='count(*)')
+        assert not(n_psths_per_condition & 'count > 1'), 'More than one PSTH per motor unit and condition. Check ' \
+            + (', '.join(['{}'] * len(remaining_keys))).format(*remaining_keys)
+
+        # get condition keys
+        condition_keys = pacman_acquisition.ConditionParams().get_common_attributes(self, include=['label','rank','time','force'])
+
+        # get motor unit keys
+        motor_chan_keys = (processing.MotorUnit & self).fetch('KEY')
+
+        # remove standard errors from table
+        self = self.proj('motor_unit_psth')
+
+        # ensure matched sample rates across the population and with desired sample rate
+        unique_sample_rates = (dj.U('behavior_recording_sample_rate') & (acquisition.BehaviorRecording & self)) \
+            .fetch('behavior_recording_sample_rate')
+
+        if len(unique_sample_rates) > 1 or (fs is not None and not all(unique_sample_rates == fs)):
+
+            # use modal sample rate if multiple in dataset
+            if fs is None:
+                fs_mode, _ = scipy.stats.mode(unique_sample_rates)
+                fs = fs_mode[0]
+
+            # join psth table with condition table
+            self *= pacman_acquisition.Behavior.Condition.proj(t_old='condition_time')
+
+            psths = []
+            for cond_key in condition_keys:
+
+                # make new time vector
+                t_new, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_key['condition_id'], fs)
+                cond_key.update(condition_time=t_new)
+
+                # fetch psth data
+                psth_data = [(self & cond_key & chan_key).fetch1() for chan_key in motor_chan_keys]
+
+                # interpolate psths to new timebase as needed
+                if fs is not None:
+                    [X.update(motor_unit_psth=np.interp(t_new, X['t_old'], X['motor_unit_psth'])) for X in psth_data];
+
+                # extract psths and append to list
+                psths.append(np.array([X['motor_unit_psth'] for X in psth_data]))
+
+        else:
+            # fetch psths and stack across units
+            psths = []
+            for cond_key in condition_keys:
+                psths.append(np.stack(
+                    [(self & cond_key & chan_key).fetch1('motor_unit_psth') for chan_key in motor_chan_keys]
+                ))
+
+        # label each time step in concatenated population vector with condition index
+        condition_ids = [(cond_key['condition_id'], ) * X.shape[1] for cond_key, X in zip(condition_keys, psths)]
+
+        # extract condition times from keys
+        condition_times = [cond_key['condition_time'] for cond_key in condition_keys]
+
+        # soft normalize
+        if soft_normalize is not None:
+            rate_range = np.hstack(psths).ptp(axis=1, keepdims=True)
+            psths = [X/(rate_range + soft_normalize) for X in psths]
+
+        # mean-center
+        if mean_center:
+            rate_mean = np.hstack(psths).mean(axis=1, keepdims=True)
+            psths = [X - rate_mean for X in psths]
+        
+        # format output
+        if output_format == 'array':
+
+            # stack output across conditions and times
+            psths = np.hstack(psths)
+            condition_ids = np.hstack(condition_ids)
+            condition_times = np.hstack(condition_times)
+
+        elif output_format == 'dict':
+
+            # aggregate data into a dict
+            psth_data = []
+            for cond_key, X in zip(condition_keys, psths):
+                for chan_key, Xi in zip(motor_chan_keys, X):
+                    psth_data.append(dict(cond_key, **chan_key, motor_unit_psth=Xi))
+
+            psths = psth_data
+
+        return psths, condition_ids, condition_times, condition_keys, motor_chan_keys
