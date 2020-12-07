@@ -4,6 +4,10 @@ import numpy as np
 from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
 from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
+from functools import reduce
+from typing import Tuple, List
+
+DataJointTable = dj.user_tables.OrderedClass
 
 schema = dj.schema(dj.config.get('database.prefix') + 'churchland_analyses_pacman_acquisition')
 
@@ -92,13 +96,26 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='CONVERT(ROUND(force_max*target_offset,{}), char)'.format(n_sigfigs)) \
-                .proj(label='CONCAT("Static (", amp, " N)")')
+                .proj(condition_label='CONCAT("Static (", amp, " N)")')
 
             if keep_self:
                 rel = self * rel
 
             return rel
-        
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='CONVERT(ROUND(force_max*target_offset, 4), char)') \
+                .proj(condition_rank='CONCAT("00_", LPAD(amp, 8, 0))')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
+
     class Ramp(dj.Part):
         definition = """
         # Linear ramp force profile parameters
@@ -112,12 +129,25 @@ class ConditionParams(dj.Lookup):
 
             rel = (self * ConditionParams.Target * ConditionParams.Force) \
                 .proj(amp='CONVERT(ROUND(force_max*target_amplitude/target_duration,{}), char)'.format(n_sigfigs)) \
-                .proj(label='CONCAT("Ramp (", amp, " N/s)")')
+                .proj(condition_label='CONCAT("Ramp (", amp, " N/s)")')
 
             if keep_self:
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(amp='ROUND(force_max*target_amplitude/target_duration, 4)') \
+                .proj(condition_rank='CONCAT("10_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))')
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     class Sine(dj.Part):
         definition = """
@@ -136,12 +166,30 @@ class ConditionParams(dj.Lookup):
                     amp='CONVERT(ROUND(target_amplitude*force_max,{}), char)'.format(n_sigfigs), 
                     freq='CONVERT(ROUND(target_frequency,{}), char)'.format(n_sigfigs)
                 ) \
-                .proj(label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
+                .proj(condition_label='CONCAT("Sine (", amp, " N, ", freq, " Hz)")')
 
             if keep_self:
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Target * ConditionParams.Force) \
+                .proj(
+                    amp='ROUND(target_amplitude*force_max, 4)', 
+                    freq='CONVERT(ROUND(target_frequency, 4), char)'
+                ) \
+                .proj(condition_rank=(
+                    'CONCAT("20_", LPAD(freq, 8, 0), "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
+                ))
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
         
     class Chirp(dj.Part):
         definition = """
@@ -162,12 +210,121 @@ class ConditionParams(dj.Lookup):
                     freq1='CONVERT(ROUND(target_frequency_init,{}), char)'.format(n_sigfigs),
                     freq2='CONVERT(ROUND(target_frequency_final,{}), char)'.format(n_sigfigs),
                 ) \
-                .proj(label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
+                .proj(condition_label='CONCAT("Chirp (", amp, " N, ", freq1, "-", freq2, " Hz)")')
 
             if keep_self:
                 rel = self * rel
 
             return rel
+
+        def proj_rank(self, keep_self: bool=True):
+            """Project ranking based on frequency and amplitude."""
+
+            rel = (self * ConditionParams.Force) \
+                .proj(
+                    amp='ROUND(force_max*target_amplitude, 4)',
+                    freq1='LPAD(CONVERT(ROUND(target_frequency_init, 4), char), 8, 0)',
+                    freq2='LPAD(CONVERT(ROUND(target_frequency_final, 4), char), 8, 0)',
+                ) \
+                .proj(condition_rank=(
+                    'CONCAT("30_", freq1, "_", freq2, "_", LPAD(CONVERT(ABS(amp),char), 8, 0), "_", IF(amp>0, "0", "1"))'
+                ))
+
+            if keep_self:
+                rel = self * rel
+
+            return rel
+
+
+    def proj_label(self, n_sigfigs: int=4):
+        """Project label in all child target tables and joins with master."""
+
+        target_children = datajointutils.get_parts(ConditionParams.Target)
+
+        target_labels = [dj.U('condition_id', 'condition_label') & (x & self).proj_label(n_sigfigs=n_sigfigs) for x in target_children]
+
+        labeled_self = reduce(lambda x,y: x+y, target_labels)
+
+        return labeled_self
+
+
+    def proj_rank(self):
+        """Project rank in all child target tables and joins with master."""
+
+        target_children = datajointutils.get_parts(ConditionParams.Target)
+
+        target_ranks = [dj.U('condition_id', 'condition_rank') & (x & self).proj_rank() for x in target_children]
+
+        ranked_self = reduce(lambda x,y: x+y, target_ranks)
+
+        return ranked_self
+
+
+    def get_common_attributes(
+        self, 
+        table: DataJointTable, 
+        include: List[str]=['label','rank'],
+        n_sigfigs: int=4,
+    ) -> List[dict]:
+        """Fetches most common attributes in the input table.
+
+        Args:
+            table (DataJointTable): DataJoint table to use in the restriction
+            include (List[str], optional): Attributes to project into the condition table. 
+                Options: ['label','rank','time','force']. Defaults to ['label','rank'].
+            n_sigfigs (int, optional): Number of significant figures include in label. Defaults to 4.
+
+        Returns:
+            condition_attributes (List[dict]): list of attributes
+        """
+
+        # count condition frequency in the table
+        condition_counts = self.aggr(table, count='count(*)')
+
+        # restrict by most counts
+        max_count = dj.U().aggr(condition_counts, count='max(count)').fetch1('count')
+        self = self & (condition_counts & 'count={}'.format(max_count)).proj()
+
+        if include is not None:
+
+            # project label
+            self = self * ConditionParams().proj_label(n_sigfigs=n_sigfigs) if 'label' in include else self
+
+            # project rank
+            self = self * ConditionParams().proj_rank() if 'rank' in include else self
+
+            # fetch attributes
+            condition_attributes = self.fetch(as_dict=True, order_by=('condition_rank' if 'rank' in include else None))
+
+            # aggregate target attributes
+            target_attributes = []
+            target_attributes.append('condition_time') if 'time' in include else None
+            target_attributes.append('condition_force') if 'force' in include else None
+
+            if any(target_attributes):
+
+                # ensure matched sample rates across sessions
+                behavior_recordings = acquisition.BehaviorRecording & table
+                unique_sample_rates = dj.U('behavior_recording_sample_rate') & behavior_recordings
+                assert len(unique_sample_rates) == 1, 'Mismatched sample rates!'
+
+                fs = unique_sample_rates.fetch1('behavior_recording_sample_rate')
+
+                # join condition table with secondary attributes
+                for cond_attr in condition_attributes:
+
+                    t, f = ConditionParams.target_force_profile(cond_attr['condition_id'], fs)
+
+                    if 'time' in include:
+                        cond_attr.update(condition_time=t)
+
+                    if 'force' in include:
+                        cond_attr.update(condition_force=f)
+
+        else:
+            condition_attributes = self.fetch(as_dict=True)
+
+        return condition_attributes
 
         
     @classmethod
@@ -274,7 +431,11 @@ class ConditionParams(dj.Lookup):
         return cond_attr, cond_rel, targ_type_rel
     
     @classmethod
-    def target_force_profile(self, condition_id, Fs):
+    def target_force_profile(self, condition_id: int, fs: int):
+
+        # ensure integer frequency
+        assert fs == round(fs), 'Non-integer frequency'
+        fs = int(fs)
 
         # join condition table with part tables
         joined_table, part_tables = datajointutils.join_parts(self, {'condition_id': condition_id}, depth=2, context=inspect.currentframe())
@@ -282,27 +443,22 @@ class ConditionParams(dj.Lookup):
         # condition parameters
         cond_params = joined_table.fetch1()
 
-        # convert condition parameters to float
-        cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
+        # convert sample rate to decimal type with precision inferred from condition parameters
+        fs_dec = Decimal(fs).quantize(cond_params['target_duration'])
 
-        # time vector
-        t = np.concatenate((
-            np.linspace(
-                -cond_params['target_pad_pre'], 
-                0, 
-                1+int(round(cond_params['target_pad_pre']*Fs))
-            )[:-1],
-            np.linspace(
-                0, 
-                cond_params['target_duration'], 
-                1+int(round(cond_params['target_duration']*Fs))
-            ),
-            np.linspace(
-                cond_params['target_duration'], 
-                cond_params['target_duration']+cond_params['target_pad_post'], 
-                1+int(round(cond_params['target_pad_post']*Fs))
-            )[1:]
-        ))
+        # lengths of each target region
+        target_lens = (
+            int(round(cond_params['target_pad_pre']  * fs_dec)),
+            int(round(cond_params['target_duration'] * fs_dec)) + 1,
+            int(round(cond_params['target_pad_post'] * fs_dec))
+        )
+
+        # time samples
+        xi = (
+            np.arange(-target_lens[0], 0),
+            np.arange(0, target_lens[1]),
+            np.arange(target_lens[1], sum(target_lens[-2:]))
+        )
 
         # target force functions
         if self.Static in part_tables:
@@ -325,18 +481,27 @@ class ConditionParams(dj.Lookup):
         else:
             print('Unrecognized condition table')
 
-        # indices of target regions
-        t_idx = {
-            'pre': t<0,
-            'target': (t>=0) & (t<=cond_params['target_duration']),
-            'post': t>cond_params['target_duration']}
+        # convert condition parameters to float
+        cond_params = {k:float(v) if isinstance(v,Decimal) else v for k,v in cond_params.items()}
 
-        # target force profile
-        force = np.empty(len(t))
-        force[t_idx['pre']]    = force_fcn(t[np.argmax(t_idx['target'])], cond_params) * np.ones(np.count_nonzero(t_idx['pre']))
-        force[t_idx['target']] = force_fcn(t[t_idx['target']],            cond_params)
-        force[t_idx['post']]   = force_fcn(t[np.argmax(t_idx['post'])],   cond_params) * np.ones(np.count_nonzero(t_idx['post']))
-        force = (force + cond_params['target_offset']) * cond_params['force_max']
+        # construct target force profile
+        force = np.hstack((
+            force_fcn(xi[1][0]/fs,  cond_params) * np.ones(target_lens[0]),
+            force_fcn(xi[1]/fs,     cond_params),
+            force_fcn(xi[1][-1]/fs, cond_params) * np.ones(target_lens[2])
+        ))
+
+        # add force offset
+        force += cond_params['target_offset']
+
+        # scale force from screen units to Newtons
+        force *= cond_params['force_max']
+
+        # concatenate time samples and convert to seconds
+        t = np.hstack(xi) / fs
+
+        # round time to maximum temporal precision
+        t = t.round(int(np.ceil(np.log10(fs))))
 
         return t, force
 
@@ -361,6 +526,8 @@ class Behavior(dj.Imported):
     # Behavioral data imported from Speedgoat
     -> acquisition.BehaviorRecording
     """
+
+    key_source = acquisition.BehaviorRecording
 
     class Condition(dj.Part):
         definition = """
@@ -396,27 +563,31 @@ class Behavior(dj.Imported):
         stim = null:       longblob         # TTL signal indicating the delivery of a stim pulse
         """
 
-        def process_force(self, data_type='raw', filter=True):
+        def process_force(self, data_type='raw', apply_filter=True, keep_keys=False):
 
-            # ensure one session
-            session_key = (acquisition.Session & self).fetch('KEY')
-            assert len(session_key)==1, 'Specify one acquisition session'
-            
-            # load cell parameters
-            load_cell_rel = (acquisition.Session.Hardware & session_key & {'hardware':'5lb Load Cell'}) * equipment.Hardware.Parameter
-            load_cell_capacity = (load_cell_rel & {'equipment_parameter':'force capacity'}).fetch1('equipment_parameter_value') # (Newtons)
-            load_cell_output = (load_cell_rel & {'equipment_parameter':'voltage output'}).fetch1('equipment_parameter_value') # (Volts)
+            # aggregate load cell parameters per session
+            load_cell_params = (acquisition.Session.Hardware & {'hardware': '5lb Load Cell'}) * equipment.Hardware.Parameter & self
+
+            force_capacity_per_session = dj.U(*acquisition.Session.primary_key) \
+                .aggr((load_cell_params & {'equipment_parameter': 'force capacity'}), force_capacity='equipment_parameter_value')
+
+            voltage_output_per_session = dj.U(*acquisition.Session.primary_key) \
+                .aggr((load_cell_params & {'equipment_parameter': 'voltage output'}), voltage_output='equipment_parameter_value')
+
+            load_cell_params_per_session = force_capacity_per_session * voltage_output_per_session
 
             # 25 ms Gaussian filter
             filter_rel = processing.Filter.Gaussian & {'sd':25e-3, 'width':4}
 
-            # join trial force data with condition parameters
-            force_rel = self * ConditionParams.Force
+            # join trial force data with force and load cell parameters
+            force_rel = self * ConditionParams.Force * load_cell_params_per_session
 
             # fetch force data
-            data_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
-            data_attr = data_attr[data_type]
-            force_data = force_rel.fetch('force_max', 'force_offset', data_attr, as_dict=True, order_by='trial')
+            data_type_attr = {'raw':'force_raw_online', 'filt':'force_filt_online'}
+            data_attr = data_type_attr[data_type]
+            force_data = force_rel \
+                .proj(data_attr, 'force_max', 'force_offset', 'force_capacity', 'voltage_output') \
+                .fetch(as_dict=True, order_by='trial')
 
             # sample rate
             fs = (acquisition.BehaviorRecording & self).fetch1('behavior_recording_sample_rate')
@@ -427,10 +598,10 @@ class Behavior(dj.Imported):
                 f[data_attr] = f[data_attr].copy()
 
                 # normalize force (V) by load cell capacity (V)
-                f[data_attr] /= load_cell_output
+                f[data_attr] /= f['voltage_output']
 
                 # convert force to proportion of maximum load cell output (N)
-                f[data_attr] *= load_cell_capacity/f['force_max']
+                f[data_attr] *= f['force_capacity']/f['force_max']
 
                 # subtract baseline force (N)
                 f[data_attr] -= float(f['force_offset'])
@@ -439,16 +610,18 @@ class Behavior(dj.Imported):
                 f[data_attr] *= f['force_max']
 
                 # filter
-                if filter:
-                    f[data_attr] = filter_rel.filter(f[data_attr], fs)
+                if apply_filter:
+                    f[data_attr] = filter_rel.filt(f[data_attr], fs)
+
+            # pop force parameters
+            for key in ['force_id', 'force_max', 'force_offset', 'force_capacity', 'voltage_output']:
+                [f.pop(key) for f in force_data]
 
             # limit output to force signal
-            force = np.array([f[data_attr] for f in force_data])
+            if not keep_keys:
+                force_data = np.array([f[data_attr] for f in force_data])
 
-            if len(force) == 1:
-                force = force[0]
-
-            return force            
+            return force_data            
         
     def make(self, key):
 
@@ -457,7 +630,7 @@ class Behavior(dj.Imported):
         if (acquisition.Session.Hardware & key & {'hardware': 'Speedgoat'}):
 
             # behavior sample rate
-            fs = (acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate')
+            fs = int((acquisition.BehaviorRecording & key).fetch1('behavior_recording_sample_rate'))
 
             # summary file path
             summary_file_path = (acquisition.BehaviorRecording.File & key & {'behavior_file_extension': 'summary'})\

@@ -1,5 +1,5 @@
 import datajoint as dj
-import os, glob
+import os, re, glob
 from os.path import dirname, basename, isfile, join
 from dotenv import load_dotenv, find_dotenv
 
