@@ -2,6 +2,7 @@ import datajoint as dj
 import os, re, inspect
 import numpy as np
 import colorcet as cc
+import matplotlib.cm as mpl_cm
 from churchland_pipeline_python import lab, acquisition, equipment, reference, processing
 from churchland_pipeline_python.utilities import speedgoat, datajointutils
 from decimal import Decimal
@@ -526,8 +527,8 @@ class ConditionParams(dj.Lookup):
         condition_hue_sequence = dict(
             Static=cc.cm.linear_blue_5_95_c73_r,
             Ramp=cc.cm.linear_green_5_95_c69_r,
-            Sine=cc.cm.fire_r,
-            Chirp=cc.cm.linear_bmw_5_95_c86_r
+            Sine=cc.cm.linear_wyor_100_45_c55,
+            Chirp=mpl_cm.get_cmap('Purples'),
         )
 
         # hue sequence for endpoints
@@ -539,10 +540,6 @@ class ConditionParams(dj.Lookup):
             np.array([cond_key['condition_force'].max() for cond_key in condition_keys]).max()
         ])
 
-        # function to linearly sample hue sequences based on set of unique values
-        def linear_sample_value_set(x):
-            return (x - x.min()) / (x.ptp() if x.ptp() != 0 else 1) * (len(x)-1)/(len(x)+1) + 1/(len(x)+1)
-
         for condition_type, hue_sequence in condition_hue_sequence.items():
 
             # filter condition keys by type
@@ -552,6 +549,7 @@ class ConditionParams(dj.Lookup):
             if condition_type == 'Static':
 
                 target_freqs = np.array([0] * len(cond_set_keys))
+                freq_sample_map = {0: 0.5}
 
             elif condition_type == 'Ramp':
 
@@ -559,10 +557,18 @@ class ConditionParams(dj.Lookup):
                 target_freqs = np.array([eval(re.search('.*_(.*)_.*', cond_key['condition_rank']).group(1)) \
                     for cond_key in cond_set_keys])
 
+                unique_freqs = np.unique(target_freqs)
+                unique_sample_pos = np.linspace(0.1, 0.6, len(unique_freqs))
+                freq_sample_map = {freq: pos for freq, pos in zip(unique_freqs, unique_sample_pos)}
+
             elif condition_type == 'Sine':
 
                 target_freqs = np.array([eval(re.search('.*_(.*)_.*_.*', cond_key['condition_rank']).group(1)) \
                     for cond_key in cond_set_keys])
+
+                unique_freqs = np.unique(target_freqs)
+                unique_sample_pos = np.linspace(0, 1, len(unique_freqs))
+                freq_sample_map = {freq: pos for freq, pos in zip(unique_freqs, unique_sample_pos)}
 
             elif condition_type == 'Chirp':
 
@@ -570,15 +576,15 @@ class ConditionParams(dj.Lookup):
                 target_freqs = np.array([eval(re.search('.*_.*_(.*)_.*_.*', cond_key['condition_rank']).group(1)) \
                     for cond_key in cond_set_keys])
 
+                unique_freqs = np.unique(target_freqs)
+                unique_sample_pos = np.linspace(0.75, 1, len(unique_freqs))
+                freq_sample_map = {freq: pos for freq, pos in zip(unique_freqs, unique_sample_pos)}
+
             else:
                 print('target type {} unrecognized'.format(condition_type))
                 return
 
             # determine hue sample position from target frequencies
-            unique_freqs = np.unique(target_freqs)
-            unique_sample_pos = linear_sample_value_set(unique_freqs)
-            freq_sample_map = {freq: pos for freq, pos in zip(unique_freqs, unique_sample_pos)}
-
             hue_sample_pos = [freq_sample_map[freq] for freq in target_freqs]
 
             color_maps = [np.round(255 * np.array(hue_sequence(samp_pos))).astype(int)[:3]
