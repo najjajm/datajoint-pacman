@@ -765,3 +765,26 @@ class Behavior(dj.Imported):
         else: 
             print('Unrecognized task controller')
             return None
+
+# =======
+# LEVEL 2
+# =======
+    
+@schema
+class ConditionSample(dj.Computed):
+    definition = """
+    # Behavioral data imported from Speedgoat
+    -> Behavior.Condition
+    condition_sample_idx:   smallint unsigned
+    ---
+    condition_time:  float
+    condition_force: float
+    """
+
+    key_source = Behavior.Condition & [{'session_date': d} for d in ['2020-01-03','2020-01-08']]
+
+    def make(self, key):
+        time, force = (Behavior.Condition & key).fetch1('condition_time', 'condition_force')
+        attrs = [dict(key, condition_sample_idx=xi, condition_time=ti, condition_force=fi) \
+            for xi, (ti, fi) in enumerate(zip(time, force))]
+        self.insert(attrs)

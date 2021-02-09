@@ -374,14 +374,16 @@ class NeuronPsthSample(dj.Computed):
     definition = """
     # Peri-stimulus time histogram sample
     -> NeuronPsth
-    condition_sample_idx:   smallint unsigned
+    -> pacman_acquisition.ConditionSample
     ---
-    neuron_psth_sample:     float
-    neuron_psth_sem_sample: float
+    neuron_psth:     float
+    neuron_psth_sem: float
     """
+
+    key_source = NeuronPsth & pacman_acquisition.ConditionSample
 
     def make(self, key):
         psth, sem = (NeuronPsth & key).fetch1('neuron_psth', 'neuron_psth_sem')
-        attrs = [dict(key, condition_sample_idx=idx, neuron_psth_sample=psth_sample, neuron_psth_sem_sample=sem_sample) \
-            for idx, (psth_sample, sem_sample) in enumerate(zip(psth, sem))]
+        attrs = [dict(key, condition_sample_idx=xi, neuron_psth=psth_i, neuron_psth_sem=sem_i) \
+            for xi, (psth_i, sem_i) in enumerate(zip(psth, sem))]
         self.insert(attrs)
