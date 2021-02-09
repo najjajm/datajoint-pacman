@@ -781,8 +781,6 @@ class ConditionSample(dj.Computed):
     condition_force_sample: float
     """
 
-    key_source = Behavior.Condition & [{'session_date': d} for d in ['2020-01-03','2020-01-08']]
-
     def make(self, key):
         time, force = (Behavior.Condition & key).fetch1('condition_time', 'condition_force')
         attrs = [dict(key, condition_sample_idx=xi, condition_time_sample=ti, condition_force_sample=fi) \
