@@ -364,26 +364,3 @@ class NeuronPsth(dj.Computed):
             psths = psth_data
 
         return psths, condition_ids, condition_times, condition_keys, neuron_keys
-
-# =======
-# LEVEL 3
-# =======
-
-@schema
-class NeuronPsthSample(dj.Computed):
-    definition = """
-    # Peri-stimulus time histogram sample
-    -> NeuronPsth
-    -> pacman_acquisition.ConditionSample
-    ---
-    neuron_psth_sample:     float
-    neuron_psth_sem_sample: float
-    """
-
-    key_source = NeuronPsth & pacman_acquisition.ConditionSample
-
-    def make(self, key):
-        psth, sem = (NeuronPsth & key).fetch1('neuron_psth', 'neuron_psth_sem')
-        attrs = [dict(key, condition_sample_idx=xi, neuron_psth_sample=psth_i, neuron_psth_sem_sample=sem_i) \
-            for xi, (psth_i, sem_i) in enumerate(zip(psth, sem))]
-        self.insert(attrs)
