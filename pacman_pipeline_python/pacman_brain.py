@@ -376,14 +376,14 @@ class NeuronPsthSample(dj.Computed):
     -> NeuronPsth
     -> pacman_acquisition.ConditionSample
     ---
-    neuron_psth:     float
-    neuron_psth_sem: float
+    neuron_psth_sample:     float
+    neuron_psth_sem_sample: float
     """
 
     key_source = NeuronPsth & pacman_acquisition.ConditionSample
 
     def make(self, key):
         psth, sem = (NeuronPsth & key).fetch1('neuron_psth', 'neuron_psth_sem')
-        attrs = [dict(key, condition_sample_idx=xi, neuron_psth=psth_i, neuron_psth_sem=sem_i) \
+        attrs = [dict(key, condition_sample_idx=xi, neuron_psth_sample=psth_i, neuron_psth_sem_sample=sem_i) \
             for xi, (psth_i, sem_i) in enumerate(zip(psth, sem))]
         self.insert(attrs)
