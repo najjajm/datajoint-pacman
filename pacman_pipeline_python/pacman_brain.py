@@ -87,33 +87,29 @@ class NeuronSpikeRaster(dj.Computed):
         # loop unique conditions
         for cond_key in condition_keys:
 
-            t_cond = cond_key['condition_time']
-
             # new time vector (behavior time base by default)
             if fs is None:
                 fs_new = (acquisition.BehaviorRecording & cond_key).fetch1('behavior_recording_sample_rate')
-                t_new = t_cond
-            
+                t_new = cond_key['condition_time']
             else:
                 fs_new = fs
-                t_new = np.linspace(t_cond[0], t_cond[-1], 1+int(round(np.ptp(t_cond)*fs_new)))
+                t_new, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_key['condition_id'], fs_new)
 
             # create time bins in new time base
             t_bins = np.concatenate((t_new[:-1,np.newaxis], t_new[1:,np.newaxis]), axis=1).mean(axis=1)
-            t_bins = np.append(np.insert(t_bins, 0, t_new[0]-1/(2*fs_new)), np.Inf)
+            t_bins = np.insert(t_bins, 0, t_new[0]-1/(2*fs_new))
+            t_bins = np.append(t_bins, t_new[-1]+1/(2*fs_new))
 
             # resample time vector to ephys time base
             fs_ephys = (acquisition.EphysRecording & cond_key).fetch1('ephys_recording_sample_rate')
-            t_ephys = np.linspace(t_cond[0], t_cond[-1], 1+int(round(np.ptp(t_cond)*fs_ephys)))
+            t_ephys, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_key['condition_id'], fs_ephys)
 
             # rebin spike rasters to new time base
             raster_keys, spike_rasters = (self & cond_key).fetch('KEY', 'neuron_spike_raster')
-
             new_spikes = [np.digitize(t_ephys[raster], t_bins) - 1 for raster in spike_rasters]
 
             # convert spike indices to raster
             if as_raster:
-
                 new_spikes = [[True if i in spk_idx else False for i in range(len(t_new))] for spk_idx in new_spikes]
 
             # append spike rasters and keys to list
