@@ -417,6 +417,212 @@ class NeuronPsth(dj.Computed):
         # return sorted unit keys
         return fig, np.array(unit_keys)[unit_order]
 
+    def pretty_plot(
+        self, 
+        behavior_keys, 
+        rate_scale: int=20, 
+        time_scale: float=1, 
+        force_scale: int=8, 
+        save_name: str=None, 
+        pixels_per_s: int=39, 
+        spike_size: float=0.75,
+        ):
+
+        unit_keys = self.fetch('KEY')
+        for unit_key in unit_keys:
+            # === Fetch data ===
+            forces = [np.vstack((pacman_behavior.ForceMean & beh_key).fetch1('force_filt_mean','force_filt_sem')) for beh_key in behavior_keys]
+            psths = [np.vstack((pacman_brain.NeuronPsth & beh_key & unit_key).fetch1('neuron_psth','neuron_psth_sem')) for beh_key in behavior_keys]
+            spikes = [np.vstack((pacman_brain.NeuronSpikeRaster & beh_key & unit_key).fetch('neuron_spike_raster')) for beh_key in behavior_keys]
+
+            max_rate = np.array([x.sum(axis=0).max() for x in psths]).max()
+            max_rate = int(np.ceil(max_rate / 10) * 10)
+
+            # === Figure parameters ===
+            n_conditions = len(behavior_keys)
+            n_rows = 3
+            n_columns = n_conditions
+
+            t_ranges = np.array([beh_key['condition_time'].ptp() for beh_key in behavior_keys])
+
+            row_heights = [0.35, 0.5, 0.15]
+            column_widths = list(t_ranges / t_ranges.sum())
+
+            plot_width = int(round(pixels_per_s * np.sum(t_ranges)))
+
+            # === Make figure ===
+            fig = make_subplots(
+                rows=n_rows,
+                cols=n_columns,
+                row_heights=row_heights,
+                column_widths=column_widths,
+                shared_xaxes='columns',
+                horizontal_spacing=0,
+                vertical_spacing=0.01,
+            )
+
+            for nd_idx in np.ndindex(n_rows, n_columns):
+
+                subplot_idx = dict(row=1+nd_idx[0], col=1+nd_idx[1])
+                t = behavior_keys[nd_idx[1]]['condition_time']
+                t_ephys = behavior_keys[nd_idx[1]]['ephys_condition_time']
+
+                if nd_idx[0] == 0: # === Plot forces ===
+
+                    force_mean = forces[nd_idx[1]][0,:]
+                    force_ste = forces[nd_idx[1]][1,:]
+
+                    # standard error
+                    for a in [-1, 1]:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=t,
+                                y=force_mean + a * force_ste,
+                                showlegend=False,
+                                line=dict(color='DarkSlateGray', width=0),
+                                fill=(None if a==-1 else 'tonexty'),
+                            ),
+                            **subplot_idx
+                        )
+
+                    # mean
+                    fig.add_trace(
+                        go.Scatter(
+                            x=t,
+                            y=force_mean,
+                            line=dict(
+                                color='DarkSlateGray',
+                                width=3,
+                            ),
+                            showlegend=False,
+                        ),
+                        **subplot_idx,
+                    )
+
+                    # add vertical scale bar
+                    if nd_idx[1] == 0:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=(t[0]-0.1*t.ptp()) + [0,0],
+                                y=[0, force_scale],
+                                mode='lines',
+                                line=dict(
+                                    color='Black',
+                                    width=4,
+                                ),
+                                showlegend=False,
+                            ),
+                            **subplot_idx
+                        )
+
+                    fig.update_yaxes(range=(-4,24), **subplot_idx)
+
+                elif nd_idx[0] == 1: # === Plot PSTHs ===
+
+                    psth_mean = psths[nd_idx[1]][0,:]
+                    psth_ste = psths[nd_idx[1]][1,:]
+
+                    # standard error
+                    for a in [-1, 1]:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=t,
+                                y=psth_mean + a * psth_ste,
+                                showlegend=False,
+                                line=dict(color='DodgerBlue', width=0),
+                                fill=(None if a==-1 else 'tonexty'),
+                            ),
+                            **subplot_idx
+                        )
+
+                    # mean
+                    fig.add_trace(
+                        go.Scatter(
+                            x=t,
+                            y=psths[nd_idx[1]][0,:],
+                            line=dict(
+                                color='DodgerBlue',
+                                width=3,
+                            ),
+                            showlegend=False,
+                        ),
+                        **subplot_idx,
+                    )
+
+                    # add vertical scale bar
+                    if nd_idx[1] == 0:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=(t[0]-0.1*t.ptp()) + [0,0],
+                                y=[0, rate_scale],
+                                mode='lines',
+                                line=dict(
+                                    color='Black',
+                                    width=4,
+                                ),
+                                showlegend=False,
+                            ),
+                            **subplot_idx
+                        )
+
+                    fig.update_yaxes(range=(0,max_rate), **subplot_idx)
+
+                else: # === Plot spikes ===
+
+                    spike_rows = np.linspace(0.1, 1, spikes[nd_idx[1]].shape[0])
+
+                    for spk_row, raster in zip(spike_rows, spikes[nd_idx[1]]):
+
+                        spk_idx = np.flatnonzero(raster)
+                        if any(spk_idx):
+
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=t_ephys[spk_idx],
+                                    y=spk_row*np.ones(len(spk_idx)),
+                                    marker=dict(
+                                        size=spike_size,
+                                        color='DodgerBlue'
+                                    ),
+                                    mode='markers',
+                                    showlegend=False,
+                                ),
+                                **subplot_idx,
+                            )
+
+                    # add horizontal scale bar
+                    if nd_idx[1] == 0:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=t[0] + [0, time_scale],
+                                y=[-0.1] * 2,
+                                mode='lines',
+                                line=dict(
+                                    color='Black',
+                                    width=4,
+                                ),
+                                showlegend=False,
+                            ),
+                            **subplot_idx
+                        )
+
+                    fig.update_xaxes(range=(t[0] - 0.15*t.ptp(), t[-1]), **subplot_idx)
+                    fig.update_yaxes(range=(-0.15, 1), **subplot_idx)
+
+                fig.update_xaxes(visible=False, **subplot_idx)
+                fig.update_yaxes(visible=False, **subplot_idx)
+
+            fig.update_layout(
+                width=plot_width,
+                height=300,
+                template='simple_white',
+                margin=dict(l=10,b=10,t=10,r=10),
+            )
+
+            fig.show(renderer='browser')
+            
+            if save_name is not None:
+                fig.write_image(save_name, scale=3)
 
     def dash_app(self, mode='inline'):
 
