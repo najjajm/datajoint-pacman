@@ -14,10 +14,14 @@ class TrialAveragedPopulationState:
         population_name: str,
         attribute_names: list,
         sample_rate: int=1000,
+        condition_order: list=None,
+        suppress_warnings: bool=False,
     ):
         self.population_name = population_name
         self.attribute_names = attribute_names
         self.sample_rate = sample_rate
+        self.condition_order = condition_order
+        self.suppress_warnings = suppress_warnings
         self._get_population_state(table)
         
     def _get_population_state(self, table):
@@ -30,14 +34,21 @@ class TrialAveragedPopulationState:
         self._get_data_set()
 
     def _fetch_condition_attributes(self, table):
-        conditions = pacman_acquisition.ConditionParams & table
-        conditions *= pacman_acquisition.ConditionParams().proj_rank()
-        conditions *= pacman_acquisition.ConditionParams().proj_label(n_sigfigs=2)
-
-        self.condition_attributes = conditions.fetch(as_dict=True, order_by='condition_rank')
+        self.condition_attributes = (pacman_acquisition.ConditionParams & table).fetch(as_dict=True)
+        self._order_condition_attributes()
         for cond_idx, cond_attr in enumerate(self.condition_attributes):
             t, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_attr['condition_id'], self.sample_rate)
             cond_attr.update(condition_index=cond_idx, condition_time=t)
+
+    def _order_condition_attributes(self):
+        if self.condition_order is not None:
+            fetched_ids = {attr['condition_id'] for attr in self.condition_attributes}
+            unorderd_ids = fetched_ids.difference(set(list(self.condition_order)))
+            if any(unorderd_ids):
+                print('Missing condition IDs in order. Using default ordering.') if not self.suppress_warnings else None
+            else:
+                attr_by_id = {attr['condition_id']: attr for attr in self.condition_attributes}
+                self.condition_attributes = [attr_by_id[condition_id] for condition_id in self.condition_order]
 
     def _fetch_population_keys(self, table):
         self.population_keys = (dj.U(self.population_name) & table).fetch(as_dict=True)
@@ -46,7 +57,11 @@ class TrialAveragedPopulationState:
         try:
             table.proj('old_sample_rate')
         except Exception:
-            print('"old_sample_rate" not found. Using behavior sample rate')
+            if not self.suppress_warnings:
+                print(
+                    'Assuming all entries were sampled at the "behavior recording" rate. ' +
+                    'Project attribute onto table called "old_sample_rate" to override or set suppress_warnings=True.'
+                )
             table *= acquisition.BehaviorRecording.proj(old_sample_rate='behavior_recording_sample_rate')
         self.data_attributes = table.proj(*(self.attribute_names + ['old_sample_rate'])).fetch(as_dict=True)
 
@@ -109,13 +124,7 @@ class TrialAveragedPopulationState:
             self.population_name: [k[self.population_name] for k in self.population_keys], 
             'condition_time': self.condition_times_index
         }
-        condition_attrs = {}
-        for idx, attr in enumerate(self.condition_attributes):
-            target_type = re.match('\w*',attr['condition_label']).group(0)
-            condition_attrs.update(
-                {attr['condition_id']: {'index': idx, 'label': attr['condition_label'], 'target_type': target_type}}
-            )
-        self._raw_data_set = xr.Dataset(data_set, coords=data_coords, attrs={'condition_id': condition_attrs})
+        self._raw_data_set = xr.Dataset(data_set, coords=data_coords)
 
         self.reset_data_set()
     
