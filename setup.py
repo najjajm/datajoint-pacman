@@ -15,7 +15,7 @@ with open(path.join(here, 'requirements.txt')) as f:
 
 setup(
     name='datajoint-pacman',
-    version='1.0.1',
+    version='1.0.2',
     description='Datajoint schemas for PacMan Task',
     author='Najja Marshall',
     author_email='njm2149@columbia.edu',
