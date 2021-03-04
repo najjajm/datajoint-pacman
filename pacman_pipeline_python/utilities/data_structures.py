@@ -14,13 +14,11 @@ class TrialAveragedPopulationState:
         population_name: str,
         attribute_names: list,
         sample_rate: int=1000,
-        condition_order: list=None,
         suppress_warnings: bool=False,
     ):
         self.population_name = population_name
         self.attribute_names = attribute_names
         self.sample_rate = sample_rate
-        self.condition_order = condition_order
         self.suppress_warnings = suppress_warnings
         self._get_population_state(table)
         
@@ -33,22 +31,12 @@ class TrialAveragedPopulationState:
         self._get_data_keys()
         self._get_data_set()
 
+    # === private methods ===
     def _fetch_condition_attributes(self, table):
         self.condition_attributes = (pacman_acquisition.ConditionParams & table).fetch(as_dict=True)
-        self._order_condition_attributes()
         for cond_idx, cond_attr in enumerate(self.condition_attributes):
             t, _ = pacman_acquisition.ConditionParams.target_force_profile(cond_attr['condition_id'], self.sample_rate)
             cond_attr.update(condition_index=cond_idx, condition_time=t)
-
-    def _order_condition_attributes(self):
-        if self.condition_order is not None:
-            fetched_ids = {attr['condition_id'] for attr in self.condition_attributes}
-            unorderd_ids = fetched_ids.difference(set(list(self.condition_order)))
-            if any(unorderd_ids):
-                print('Missing condition IDs in order. Using default ordering.') if not self.suppress_warnings else None
-            else:
-                attr_by_id = {attr['condition_id']: attr for attr in self.condition_attributes}
-                self.condition_attributes = [attr_by_id[condition_id] for condition_id in self.condition_order]
 
     def _fetch_population_keys(self, table):
         self.population_keys = (dj.U(self.population_name) & table).fetch(as_dict=True)
@@ -100,7 +88,7 @@ class TrialAveragedPopulationState:
         times = [attr['condition_time'] for attr in self.condition_attributes]
         condition_ids = [(attr['condition_id'],)*len(t) for attr, t in zip(self.condition_attributes, times)]
         self.condition_times_index = pd.MultiIndex.from_arrays(
-            [np.hstack(condition_ids), np.hstack(times)], names=('condition_id','time')
+            [np.hstack(condition_ids), np.hstack(times)], names=['condition_id','time']
         )
 
     def _get_data_keys(self):
@@ -127,6 +115,58 @@ class TrialAveragedPopulationState:
         self._raw_data_set = xr.Dataset(data_set, coords=data_coords)
 
         self.reset_data_set()
-    
+
+    # === public methods ===
+    def mean_center(self, only_vars: list=None, reference_var: str=None):
+        """Centers each data array by its cross-condition mean.
+        If only_vars is provided, centering will only be applied to the corresponding arrays.
+        If reference_var is provided, centering uses the cross-condition mean of the corresponding array."""
+        data_vars = list(self.data_set.data_vars)
+        if only_vars is not None:
+            unrecognized_variables = list(set(only_vars) - set(data_vars))
+            assert not any(unrecognized_variables), \
+                'Attributes ' + ' '.join(['{}']*len(unrecognized_variables)) + ' not found in data set'
+            data_vars = list(set(data_vars) & set(only_vars))
+
+        data_means = {var: self.data_set[var].values.mean(axis=1, keepdims=True) for var in data_vars}
+        if reference_var is not None:
+            assert reference_var in data_vars, \
+                'Reference variable {} not found in data set'.format(reference_var)
+            data_means = {var: data_means[reference_var] for var in data_vars}
+
+        for var in data_vars:
+            self.data_set[var] -= data_means[var]
+
+    def normalize(self, only_vars: list=None, reference_var: str=None, soft_factor: int=0):
+        """Normalizes each data array by its cross-condition range.
+        If only_vars is provided, normalization will only be applied to the corresponding arrays.
+        If reference_var is provided, normalization uses the cross-condition range of the corresponding array.
+        If soft_factor is provided, soft normalizes as x -> x/(range(x) + soft_factor)."""
+        data_vars = list(self.data_set.data_vars)
+        if only_vars is not None:
+            unrecognized_variables = list(set(only_vars) - set(data_vars))
+            assert not any(unrecognized_variables), \
+                'Attributes ' + ' '.join(['{}']*len(unrecognized_variables)) + ' not found in data set'
+            data_vars = list(set(data_vars) & set(only_vars))
+
+        data_ranges = {var: self.data_set[var].values.ptp(axis=1, keepdims=True) for var in data_vars}
+        if reference_var is not None:
+            assert reference_var in data_vars, \
+                'Reference variable {} not found in data set'.format(reference_var)
+            data_ranges = {var: data_ranges[reference_var] for var in data_vars}
+
+        for var in data_vars:
+            self.data_set[var] /= (soft_factor + data_ranges[var])
+        
+    def reorder_conditions(self, sorted_condition_ids: list):
+        """Down selects and reorders data set by provided condition IDs."""
+        ct_indexes = np.vstack([np.array(ct) for ct in self.data_set.indexes['condition_time']])
+        sorted_ct_indexes = np.vstack([ct_indexes[ct_indexes[:,0]==cid,:] for cid in sorted_condition_ids])
+        sorted_ct_indexes = [ct for ct in sorted_ct_indexes.T]
+        sorted_ct_indexes[0] = sorted_ct_indexes[0].astype(int)
+        new_ct_indexes = pd.MultiIndex.from_arrays(sorted_ct_indexes, names=['condition_id', 'time'])
+        self.data_set = self.data_set.reindex(condition_time=new_ct_indexes)
+
     def reset_data_set(self):
         self.data_set = self._raw_data_set.copy(deep=True)
+    
