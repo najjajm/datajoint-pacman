@@ -509,13 +509,22 @@ class ConditionParams(dj.Lookup):
 
 
     # update condition keys with color scales and endpoint colors
-    @staticmethod
     def colorize_conditions(
-        condition_keys: List[dict],
+        self,
         alpha_range: tuple=(0,1),
-        bw_range: tuple=(0.1,0.9)
+        bw_range: tuple=(0.1,0.9),
+        n_sigfigs: int=2,
     ) -> List[dict]:
         """Add color scales and endpoint colors to condition keys."""
+
+        condition_keys = (self \
+            * self.proj_label(n_sigfigs=n_sigfigs) \
+            * self.proj_rank() \
+        ).fetch(as_dict=True)
+
+        for cond_key in condition_keys:
+            _, target_force = self.target_force_profile(cond_key['condition_id'], 100)
+            cond_key.update({'condition_force': target_force})
 
         # alpha range (for indicating time)
         alpha_range = np.array(alpha_range)
@@ -613,7 +622,14 @@ class ConditionParams(dj.Lookup):
             [csk.update(color_scale=cs, init_marker_color=imc, final_marker_color=fmc) \
                 for csk, cs, imc, fmc in zip(cond_set_keys, color_scales, init_marker_colors, final_marker_colors)];
 
-        return condition_keys
+        condition_colors = {}
+        keep_attrs = ['condition_label','color_scale','init_marker_color','final_marker_color']
+        for cond_key in condition_keys:
+            condition_colors.update({
+                cond_key['condition_id']: {k:v for k,v in cond_key.items() if k in keep_attrs}
+            })
+
+        return condition_colors
 
 
 @schema
