@@ -4,8 +4,173 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from churchland_pipeline_python import acquisition
+from dataclasses import dataclass
 from sklearn import decomposition
+from typing import List
 from .. import pacman_acquisition
+
+class NeuroDataArray:
+
+    def __init__(
+        self,
+        data: List[list],
+        unit_ids: List[list]=None,
+        condition_ids: list=None,
+        condition_times: list=None,
+        data_name: str='data',
+        ):
+        self.data = data
+        self.unit_ids = unit_ids
+        self.condition_ids = condition_ids
+        self.condition_times = condition_times
+        self.data_name = data_name
+        self._read_data()
+        self._read_unit_ids()
+        self._read_condition_ids()
+        self._read_condition_times()
+        self._make_data_set()
+        self._cleanup()
+
+    def _read_data(self):
+        assert isinstance(self.data, list) and all(isinstance(X,list) for X in self.data), \
+            'Expected data as a list of lists'
+        self._data_stats = {
+            'n_sessions': len(self.data),
+            'n_conditions': len(self.data[0]),
+            'n_units_per_session': [X[0].shape[0] for X in self.data],
+            'n_samples_per_condition': [X.shape[1] for X in self.data[0]],
+            'multi_trial': any([Y.ndim == 3 for X in self.data for Y in X])
+        }
+        assert all(len(X)==self._data_stats['n_conditions'] for X in self.data), \
+            'Mismatched number of conditions across sessions'
+        for session_data in self.data:
+            assert np.array_equal([X.shape[1] for X in session_data], self._data_stats['n_samples_per_condition']), \
+                'Mismatched condition durations across session'
+        for X, unit_count in zip(self.data, self._data_stats['n_units_per_session']):
+            assert all(xi.shape[0]==unit_count for xi in X), \
+                'Mismatched number of units across conditions'
+
+    def _read_unit_ids(self):
+        if self.unit_ids is None:
+            self._set_default_unit_ids()
+        else:
+            self._validate_user_unit_ids()
+
+    def _read_condition_ids(self):
+        if self.condition_ids is None:
+            self._set_default_condition_ids()
+        else:
+            self._validate_user_condition_ids()
+
+    def _read_condition_times(self):
+        if self.condition_times is None:
+            self._set_default_condition_times()
+        else:
+            self._validate_user_condition_times()
+
+    def _make_data_set(self):
+        session_arrays = []
+        for session_data, unit_ids in zip(self.data, self.unit_ids):
+
+            condition_arrays = []
+            for condition_data, condition_id, condition_time in zip(session_data, self.condition_ids, self.condition_times):
+                unit_coords = self._make_session_unit_coords(unit_ids)
+                time_coords = self._make_condition_time_coords(condition_id, condition_time)
+                coords = [unit_coords] + [time_coords]
+                if self._data_stats['multi_trial']:
+                    condition_data = np.atleast_3d(condition_data)
+                    coords.append(('trial', np.arange(condition_data.shape[2])))
+
+                condition_arrays.append(xr.DataArray(condition_data, coords=coords))
+            
+            session_arrays.append(xr.concat(condition_arrays, dim=time_coords[0]))
+        
+        self.data_set = xr.Dataset({self.data_name: xr.concat(session_arrays, dim=unit_coords[0])})
+
+    def _make_session_unit_coords(self, unit_ids):
+        unit_indexes, unit_index_names = self._ids_to_indexes(unit_ids)
+        unit_indexes = self._correct_coord_datatypes(unit_ids[0], unit_indexes, unit_index_names)
+        unit_multi_index = pd.MultiIndex.from_arrays(unit_indexes, names=unit_index_names)
+        return ('_'.join(unit_index_names), unit_multi_index)
+
+    def _make_condition_time_coords(self, condition_id, condition_time):
+        condition_indexes, condition_index_names = self._ids_to_indexes(condition_id)
+        condition_indexes = self._correct_coord_datatypes(condition_id, condition_indexes, condition_index_names)
+        condition_indexes = [np.tile(cidx, len(condition_time)) for cidx in condition_indexes]
+        condition_indexes += [condition_time]
+        condition_index_names += ['time']
+        condition_time_multi_index = pd.MultiIndex.from_arrays(condition_indexes, names=condition_index_names)
+        return ('_'.join(condition_index_names), condition_time_multi_index)
+
+    def _ids_to_indexes(self, coord_ids):
+        index_names = np.vstack(coord_ids)[:,0]
+        index_values = np.vstack(coord_ids)[:,1]
+        unique_index_names = list(np.unique(index_names))
+        grouped_index_values = [index_values[index_names==name] for name in unique_index_names]
+        return grouped_index_values, unique_index_names
+
+    def _correct_coord_datatypes(self, coord_id, index_values, index_names):
+        coord_dtypes = {x[0]: type(x[1]) for x in coord_id}
+        for idx, name in enumerate(index_names):
+            index_values[idx] = index_values[idx].astype(coord_dtypes[name])
+        return index_values
+
+    def _set_default_unit_ids(self):
+        if self._data_stats['n_sessions'] == 1:
+            self.unit_ids = [[('unit', unit)] for unit in range(self._data_stats['n_units_per_session'][0])]
+        else:
+            self.unit_ids = []
+            for session in range(self._data_stats['n_sessions']):
+                self.unit_ids.append([
+                    [('session',session), ('unit',unit)] for unit in range(self._data_stats['n_units_per_session'][session])
+                ])
+
+    def _validate_user_unit_ids(self):
+        assert isinstance(self.unit_ids, list) and all(isinstance(X,list) for X in self.unit_ids), \
+            'Expected unit IDs as a list of lists'
+        assert len(self.unit_ids) == self._data_stats['n_sessions'], \
+            'Mismatched number of sessions and sets of units'
+        assert np.array_equal([len(X) for X in self.unit_ids], self._data_stats['n_units_per_session']), \
+            'Mismatched units within sessions'
+        reformatted_unit_ids = []
+        for session_unit_ids in self.unit_ids:
+            if all(isinstance(X,list) for X in session_unit_ids):
+                for unit_ids in session_unit_ids:
+                    assert(all(isinstance(uid,tuple)) for uid in unit_ids), \
+                        'Expected a list of list of tuples'                        
+                reformatted_unit_ids.append(session_unit_ids)
+            if all(isinstance(X,tuple) for X in session_unit_ids):
+                reformatted_unit_ids.append([[uid] for uid in session_unit_ids])
+            if all(isinstance(X,int) or isinstance(X,str) for X in session_unit_ids):
+                reformatted_unit_ids.append([[('unit',uid)] for uid in session_unit_ids])
+        self.unit_ids = reformatted_unit_ids
+    
+    def _set_default_condition_ids(self):
+        self.condition_ids = [[('condition',cid)] for cid in range(self._data_stats['n_conditions'])]
+
+    def _validate_user_condition_ids(self):
+        assert isinstance(self.condition_ids, list), 'Expected a list of condition IDs'
+        if all(isinstance(cid,int) or isinstance(cid,str) for cid in self.condition_ids):
+            self.condition_ids = [[('condition',cid)] for cid in self.condition_ids]
+        else:
+            for condition_id in self.condition_ids:
+                assert all(isinstance(cid,tuple) for cid in condition_id), \
+                    'Expected a list of tuples'
+
+    def _set_default_condition_times(self):
+        self.condition_times = [np.arange(T) for T in self._data_stats['n_samples_per_condition']]
+
+    def _validate_user_condition_times(self):
+        assert np.array_equal([len(t) for t in self.condition_times], self._data_stats['n_samples_per_condition']), \
+            'Mismatched condition time vectors and data dimensions'
+
+    def _cleanup(self):
+        delattr(self, 'data')
+        delattr(self, 'unit_ids')
+        delattr(self, 'condition_ids')
+        delattr(self, 'condition_times')
+        delattr(self, 'data_name')
+        delattr(self, '_data_stats')
 
 class TrialAveragedPopulationState:
 
