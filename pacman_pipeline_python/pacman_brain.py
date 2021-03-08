@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mplcol
 from churchland_pipeline_python import lab, acquisition, processing
 from churchland_pipeline_python.utilities import datajointutils
-from . import pacman_acquisition, pacman_processing
+from njm2149_pipeline_python.pacman import preprocessing
+from . import pacman_acquisition, pacman_processing, pacman_behavior
 from sklearn import decomposition
 from typing import Any, List, Tuple
 
@@ -491,7 +492,7 @@ class NeuronPsth(dj.Computed):
 
     def pretty_plot(
         self, 
-        behavior_keys, 
+        condition_ids, 
         rate_scale: int=20, 
         time_scale: float=1, 
         force_scale: int=8, 
@@ -500,12 +501,31 @@ class NeuronPsth(dj.Computed):
         spike_size: float=0.75,
         ):
 
-        unit_keys = self.fetch('KEY')
+        
+
+        unit_keys = (processing.Neuron & self).fetch('KEY')
         for unit_key in unit_keys:
             # === Fetch data ===
+            behavior_keys = (pacman_acquisition.Behavior.Condition.proj('condition_time') & unit_key) \
+                * pacman_acquisition.ConditionParams().proj_label(n_sigfigs=2) 
+
+            sorted_behavior_keys = []
+            for cond_id in condition_ids:
+                sorted_behavior_keys.extend([k for k in behavior_keys if k['condition_id'] == cond_id])
+
+            behavior_keys = sorted_behavior_keys.copy()
+
+            [k.update(session_date=unit_key['session_date']) for k in behavior_keys];
+
+            fs = int((acquisition.EphysRecording & unit_key).fetch1('ephys_recording_sample_rate'))
+            for beh_key in behavior_keys:
+                t, _ = pacman_acquisition.ConditionParams.target_force_profile(beh_key['condition_id'], fs)
+                beh_key.update(ephys_condition_time=t)
+
+
             forces = [np.vstack((pacman_behavior.ForceMean & beh_key).fetch1('force_filt_mean','force_filt_sem')) for beh_key in behavior_keys]
-            psths = [np.vstack((pacman_brain.NeuronPsth & beh_key & unit_key).fetch1('neuron_psth','neuron_psth_sem')) for beh_key in behavior_keys]
-            spikes = [np.vstack((pacman_brain.NeuronSpikeRaster & beh_key & unit_key).fetch('neuron_spike_raster')) for beh_key in behavior_keys]
+            psths = [np.vstack((self & beh_key & unit_key).fetch1('neuron_psth','neuron_psth_sem')) for beh_key in behavior_keys]
+            spikes = [np.vstack((NeuronSpikeRaster & beh_key & unit_key).fetch('neuron_spike_raster')) for beh_key in behavior_keys]
 
             max_rate = np.array([x.sum(axis=0).max() for x in psths]).max()
             max_rate = int(np.ceil(max_rate / 10) * 10)
