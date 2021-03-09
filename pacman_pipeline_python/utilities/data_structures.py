@@ -328,3 +328,8 @@ class NeuroDataArray(NeuroDataArrayConstructor):
         sorted_ct_indexes[0] = sorted_ct_indexes[0].astype(int)
         new_ct_indexes = pd.MultiIndex.from_arrays(sorted_ct_indexes, names=['condition_id', 'time'])
         self.data_set = self.data_set.reindex(condition_time=new_ct_indexes)
+
+    def trial_average(self, n_folds: int=1):
+        assert 'trial' in self.data_set.coords, 'Only applicable for multi-trial data'
+        fold_ids = np.tile(np.arange(n_folds), np.ceil(self.data_set.dims['trial']/n_folds).astype(int))[:self.data_set.dims['trial']]
+        self.data_set = self.data_set.assign_coords(fold=('trial', fold_ids)).groupby('fold').mean(dim='trial', skipna=True)
