@@ -9,7 +9,7 @@ from sklearn import decomposition
 from typing import List
 from .. import pacman_acquisition
 
-class NeuroDataArray:
+class NeuroDataArrayConstructor:
 
     def __init__(
         self,
@@ -18,18 +18,21 @@ class NeuroDataArray:
         condition_ids: list=None,
         condition_times: list=None,
         data_name: str='data',
+        sample_rate: int=1,
         ):
         self.data = data
         self.unit_ids = unit_ids
         self.condition_ids = condition_ids
         self.condition_times = condition_times
         self.data_name = data_name
+        self.sample_rate = sample_rate
         self._read_data()
         self._read_unit_ids()
         self._read_condition_ids()
         self._read_condition_times()
         self._make_data_set()
         self._cleanup()
+        self.reset_data_set()
 
     def _read_data(self):
         assert isinstance(self.data, list) and all(isinstance(X,list) for X in self.data), \
@@ -85,13 +88,20 @@ class NeuroDataArray:
             
             session_arrays.append(xr.concat(condition_arrays, dim=time_coords[0]))
         
-        self.data_set = xr.Dataset({self.data_name: xr.concat(session_arrays, dim=unit_coords[0])})
+        self._raw_data_set = xr.Dataset(
+            {self.data_name: xr.concat(session_arrays, dim=unit_coords[0])}, 
+            attrs={'sample_rate': self.sample_rate}
+        )
 
     def _make_session_unit_coords(self, unit_ids):
         unit_indexes, unit_index_names = self._ids_to_indexes(unit_ids)
         unit_indexes = self._correct_coord_datatypes(unit_ids[0], unit_indexes, unit_index_names)
-        unit_multi_index = pd.MultiIndex.from_arrays(unit_indexes, names=unit_index_names)
-        return ('_'.join(unit_index_names), unit_multi_index)
+        if len(unit_index_names) == 1:
+            unit_coords = (unit_index_names[0], unit_indexes[0])
+        else:
+            unit_multi_index = pd.MultiIndex.from_arrays(unit_indexes, names=unit_index_names)
+            unit_coords = ('_'.join(unit_index_names), unit_multi_index)
+        return unit_coords
 
     def _make_condition_time_coords(self, condition_id, condition_time):
         condition_indexes, condition_index_names = self._ids_to_indexes(condition_id)
@@ -158,7 +168,7 @@ class NeuroDataArray:
                     'Expected a list of tuples'
 
     def _set_default_condition_times(self):
-        self.condition_times = [np.arange(T) for T in self._data_stats['n_samples_per_condition']]
+        self.condition_times = [np.arange(T)/self.sample_rate for T in self._data_stats['n_samples_per_condition']]
 
     def _validate_user_condition_times(self):
         assert np.array_equal([len(t) for t in self.condition_times], self._data_stats['n_samples_per_condition']), \
@@ -170,7 +180,80 @@ class NeuroDataArray:
         delattr(self, 'condition_ids')
         delattr(self, 'condition_times')
         delattr(self, 'data_name')
+        delattr(self, 'sample_rate')
         delattr(self, '_data_stats')
+
+    def reset_data_set(self):
+        self.data_set = self._raw_data_set.copy(deep=True)
+
+    @classmethod
+    def from_datajoint_table(
+        cls,
+        table, 
+        unit_name: str, 
+        data_name: str,
+        ):
+        # unit ID names
+        unit_id_names = [unit_name]
+
+        session_keys = (dj.U('session_date') & table).fetch('KEY')
+        if len(session_keys) > 1:
+            unit_id_names.insert(0, 'session_date')
+
+        monkey_keys = (dj.U('monkey') & table).fetch('KEY')
+        if len(monkey_keys) > 1:
+            unit_id_names.insert(0, 'monkey')
+
+        # condition IDs
+        condition_keys = (pacman_acquisition.ConditionParams & table).fetch('KEY')
+        condition_ids = [key['condition_id'] for key in condition_keys]
+
+        # check multi trial
+        is_multi_trial = 'trial' in table.primary_key
+
+        session_data = []
+        unit_ids = []
+        for monkey_key, session_key in itertools.product(monkey_keys, session_keys):
+
+            unit_keys = (dj.U(*unit_id_names) & table & session_key).fetch(as_dict=True, order_by=unit_id_names)
+            unit_ids.append([[(name, key[name]) for name in unit_id_names] for key in unit_keys])
+
+            condition_data = []
+            for condition_key in condition_keys:
+                condition_table = table & monkey_key & session_key & condition_key
+                if is_multi_trial:
+                    trial, X = condition_table.fetch('trial', data_name, order_by=unit_id_names)
+                    X = np.vstack(X)
+                    X = [X[trial==tr,:] for tr in np.unique(trial)]
+                    condition_data.append(np.stack(X, axis=2))
+                else:
+                    X = condition_table.fetch(data_name, order_by=unit_id_names)
+                    condition_data.append(np.vstack(X))
+
+            session_data.append(condition_data)
+
+        return cls(session_data, unit_ids, condition_ids, data_name=data_name)
+
+class NeuroDataArray(NeuroDataArrayConstructor):
+
+    def __init__(
+        self,
+        data: List[list],
+        unit_ids: List[list]=None,
+        condition_ids: list=None,
+        condition_times: list=None,
+        data_name: str='data',
+        sample_rate: int=1,
+        ):
+        super().__init__(
+            data, 
+            unit_ids, 
+            condition_ids, 
+            condition_times, 
+            data_name, 
+            sample_rate,
+        )
+
 
 class TrialAveragedPopulationState:
 
