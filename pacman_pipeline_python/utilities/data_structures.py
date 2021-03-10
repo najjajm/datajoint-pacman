@@ -191,18 +191,42 @@ class NeuroDataArrayConstructor:
         cls,
         table, 
         data_name: str,
-        unit_name: str=None,
+        unit_names: List[str]=None,
+        new_sample_rate: int=None,
         ):
         # unit ID names
-        unit_id_names = [unit_name] if unit_name is not None else []
+        unit_id_names = unit_names if unit_names is not None else []
 
         session_keys = (dj.U('session_date') & table).fetch('KEY')
-        if len(session_keys) > 1 or unit_name is None:
+        if len(session_keys) > 1 or unit_names is None:
             unit_id_names.insert(0, 'session_date')
 
         # condition IDs
         condition_keys = (pacman_acquisition.ConditionParams & table).fetch('KEY')
         condition_ids = [key['condition_id'] for key in condition_keys]
+
+        # fetch condition times
+        try:
+            sample_rates = list(np.unique(table.fetch('sample_rate')))
+            fetch_times = True
+        except Exception:
+            fetch_times = False
+            new_condition_times = None
+            new_sample_rate = 1
+        else:
+            assert len(sample_rates)==1 or new_sample_rate is not None, \
+                'Multiple sample rates in table and new rate unspecified'
+            if new_sample_rate is not None:
+                sample_rates.append(new_sample_rate)
+            else:
+                new_sample_rate = sample_rates[0]
+
+            condition_times = {}
+            for cid, fs in itertools.product(condition_ids, sample_rates):
+                t, _ = pacman_acquisition.ConditionParams.target_force_profile(cid, fs)
+                condition_times.update({(cid, fs): t})
+
+            new_condition_times = [condition_times[(cid, new_sample_rate)] for cid in condition_ids]
 
         # check multi trial
         is_multi_trial = 'trial' in table.primary_key
@@ -218,17 +242,33 @@ class NeuroDataArrayConstructor:
             for condition_key in condition_keys:
                 condition_table = table & session_key & condition_key
                 if is_multi_trial:
-                    trial, X = condition_table.fetch('trial', data_name, order_by=unit_id_names)
+                    if fetch_times:
+                        trial, sample_rates, X = condition_table.fetch('trial', 'sample_rate', data_name, order_by=unit_id_names)
+                        for idx, fs in enumerate(sample_rates):
+                            if fs != new_sample_rate:
+                                t_old = condition_times[(condition_key['condition_id'], fs)]
+                                t_new = condition_times[(condition_key['condition_id'], new_sample_rate)]
+                                X[idx] = np.interp(t_old, t_new, X[idx])
+                    else:
+                        trial, X = condition_table.fetch('trial', data_name, order_by=unit_id_names)
                     X = np.vstack(X)
                     X = [X[trial==tr,:] for tr in np.unique(trial)]
                     condition_data.append(np.stack(X, axis=2))
                 else:
-                    X = condition_table.fetch(data_name, order_by=unit_id_names)
+                    if fetch_times:
+                        sample_rates, X = condition_table.fetch('sample_rate', data_name, order_by=unit_id_names)
+                        for idx, fs in enumerate(sample_rates):
+                            if fs != new_sample_rate:
+                                t_old = condition_times[(condition_key['condition_id'], fs)]
+                                t_new = condition_times[(condition_key['condition_id'], new_sample_rate)]
+                                X[idx] = np.interp(t_old, t_new, X[idx])
+                    else:
+                        X = condition_table.fetch(data_name, order_by=unit_id_names)
                     condition_data.append(np.vstack(X))
 
             session_data.append(condition_data)
 
-        return cls(session_data, unit_ids, condition_ids, data_name=data_name)
+        return cls(session_data, unit_ids, condition_ids, new_condition_times, data_name, new_sample_rate)
 
 class NeuroDataArray(NeuroDataArrayConstructor):
 
