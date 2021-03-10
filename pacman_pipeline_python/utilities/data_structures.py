@@ -190,19 +190,15 @@ class NeuroDataArrayConstructor:
     def from_datajoint_table(
         cls,
         table, 
-        unit_name: str, 
         data_name: str,
+        unit_name: str=None,
         ):
         # unit ID names
-        unit_id_names = [unit_name]
+        unit_id_names = [unit_name] if unit_name is not None else []
 
         session_keys = (dj.U('session_date') & table).fetch('KEY')
-        if len(session_keys) > 1:
+        if len(session_keys) > 1 or unit_name is None:
             unit_id_names.insert(0, 'session_date')
-
-        monkey_keys = (dj.U('monkey') & table).fetch('KEY')
-        if len(monkey_keys) > 1:
-            unit_id_names.insert(0, 'monkey')
 
         # condition IDs
         condition_keys = (pacman_acquisition.ConditionParams & table).fetch('KEY')
@@ -213,14 +209,14 @@ class NeuroDataArrayConstructor:
 
         session_data = []
         unit_ids = []
-        for monkey_key, session_key in itertools.product(monkey_keys, session_keys):
+        for session_key in session_keys:
 
             unit_keys = (dj.U(*unit_id_names) & table & session_key).fetch(as_dict=True, order_by=unit_id_names)
             unit_ids.append([[(name, key[name]) for name in unit_id_names] for key in unit_keys])
 
             condition_data = []
             for condition_key in condition_keys:
-                condition_table = table & monkey_key & session_key & condition_key
+                condition_table = table & session_key & condition_key
                 if is_multi_trial:
                     trial, X = condition_table.fetch('trial', data_name, order_by=unit_id_names)
                     X = np.vstack(X)
@@ -231,6 +227,89 @@ class NeuroDataArrayConstructor:
                     condition_data.append(np.vstack(X))
 
             session_data.append(condition_data)
+
+        return cls(session_data, unit_ids, condition_ids, data_name=data_name)
+
+    @classmethod
+    def from_datajoint_table_v2(
+        cls,
+        table, 
+        data_name: str,
+        unit_name: str=None,
+        ):
+        # unit ID names
+        unit_id_names = [unit_name] if unit_name is not None else []
+
+        session_keys = (dj.U('session_date') & table).fetch('KEY')
+        if len(session_keys) > 1:
+            unit_id_names.insert(0, 'session_date')
+
+        # condition IDs
+        condition_keys = (pacman_acquisition.ConditionParams & table).fetch('KEY')
+        condition_ids = [key['condition_id'] for key in condition_keys]
+
+        # pre-allocate slots for data
+        if unit_name is not None:
+            session_unit_ids = [(dj.U(unit_name) & (table & session_key)).fetch(unit_name) for session_key in session_keys]
+        else:
+            session_unit_ids = [None] * len(session_keys)
+
+        session_data = {}
+        for session_key, unit_ids in zip(session_keys, session_unit_ids):
+            session_data.update({session_key['session_date']: {condition_id: [] for condition_id in condition_ids}})
+            if unit_ids is not None:
+                for condition_id in condition_ids:
+                    session_data[session_key['session_date']].update({condition_id: {unit_id: [] for unit_id in unit_ids}})
+
+        # fetch all table data and iteratively assign to slots
+        data_attributes = table.proj(data_name).fetch(as_dict=True)
+
+        condition_lens = dict.fromkeys(condition_ids, None)
+        for attr in data_attributes:
+            if unit_name is None:
+                data_slot = session_data[attr['session_date']][attr['condition_id']]
+            else:
+                data_slot = session_data[attr['session_date']][attr['condition_id']][attr[unit_name]]
+
+            data_slot.append(attr[data_name])
+
+            if condition_lens[attr['condition_id']] is None:
+                condition_lens.update({attr['condition_id']: len(attr[data_name])})
+
+        # unpack session data into list for constructor
+        for session_key, unit_ids in zip(session_keys, session_unit_ids):
+            session_id = session_key['session_date']
+            for condition_id in condition_ids:
+                if unit_ids is not None:
+                    # stack single-trial data along 3rd dimension
+                    for unit_id in unit_ids:
+                        X = session_data[session_id][condition_id][unit_id]
+                        if np.any(X):
+                            X = np.swapaxes(np.expand_dims(np.vstack(X), axis=2), 0, -1)
+                        else:
+                            X = np.empty((1,condition_lens[condition_id],1))
+                            X[:] = np.nan
+                        session_data[session_id][condition_id][unit_id] = X
+
+                    # stack condition data into [units x times x trials] matrix
+                    unit_data = list(session_data[session_id][condition_id].values())
+                    session_data[session_id][condition_id] = np.vstack(unit_data)
+                else:
+                    session_data[session_id][condition_id] = session_data[session_id][condition_id][np.newaxis,:]
+
+            session_data[session_id] = list(session_data[session_id].values())
+
+        session_data = list(session_data.values())
+
+        # reformat unit IDs
+        if unit_name is not None:
+            session_unit_keys = [[{'session_date': session_key['session_date'], unit_name: unit_id} for unit_id in unit_ids] \
+                for session_key, unit_ids in zip(session_keys, session_unit_ids)]
+            unit_ids = []
+            for session_key, unit_keys in zip(session_keys, session_unit_keys):
+                unit_ids.append([[(name, key[name]) for name in unit_id_names] for key in unit_keys])
+        else:
+            unit_ids = None
 
         return cls(session_data, unit_ids, condition_ids, data_name=data_name)
 
