@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from churchland_pipeline_python import acquisition
-from dataclasses import dataclass
 from sklearn import decomposition
 from typing import List
 from .. import pacman_acquisition
