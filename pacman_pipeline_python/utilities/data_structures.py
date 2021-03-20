@@ -300,7 +300,8 @@ class NeuroDataArray(NeuroDataArrayConstructor):
                 'Attributes ' + ' '.join(['{}']*len(unrecognized_variables)) + ' not found in data set'
             data_vars = list(set(data_vars) & set(only_vars))
 
-        data_means = {var: self.data_set[var].values.mean(axis=1, keepdims=True) for var in data_vars}
+        time_dim_name = next(x for x in list(self.data_set.dims.keys()) if re.match(r'.*time',x) is not None)
+        data_means = {var: self.data_set[var].mean(dim=time_dim_name) for var in data_vars}
         if reference_var is not None:
             assert reference_var in data_vars, \
                 'Reference variable {} not found in data set'.format(reference_var)
@@ -321,7 +322,8 @@ class NeuroDataArray(NeuroDataArrayConstructor):
                 'Attributes ' + ' '.join(['{}']*len(unrecognized_variables)) + ' not found in data set'
             data_vars = list(set(data_vars) & set(only_vars))
 
-        data_ranges = {var: self.data_set[var].values.ptp(axis=1, keepdims=True) for var in data_vars}
+        time_dim_name = next(x for x in list(self.data_set.dims.keys()) if re.match(r'.*time',x) is not None)
+        data_ranges = {var: self.data_set[var].max(dim=time_dim_name) - self.data_set[var].min(dim=time_dim_name) for var in data_vars}
         if reference_var is not None:
             assert reference_var in data_vars, \
                 'Reference variable {} not found in data set'.format(reference_var)
