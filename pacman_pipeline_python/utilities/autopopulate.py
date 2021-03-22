@@ -657,7 +657,7 @@ def pipeline(monkey: str='Cousteau', display_progress: bool=True):
         pacman_processing.EphysTrialAlignment:    (pacman_processing.EphysTrialAlignment.populate,    {'display_progress': display_progress}),
         pacman_processing.GoodTrial:              (pacman_processing.GoodTrial.populate,              {'display_progress': display_progress}),
         pacman_behavior.Force:                    (pacman_behavior.Force.populate,                    {'display_progress': display_progress}),
-        pacman_behavior.Force:                    (pacman_behavior.ForceMean.populate,                {'display_progress': display_progress}),
+        pacman_behavior.ForceMean:                (pacman_behavior.ForceMean.populate,                {'display_progress': display_progress}),
         pacman_brain.NeuronSpikeRaster:           (pacman_brain.NeuronSpikeRaster.populate,           {'display_progress': display_progress}),
         pacman_brain.NeuronRate:                  (pacman_brain.NeuronRate.populate,                  {'display_progress': display_progress}),
         pacman_brain.NeuronPsth:                  (pacman_brain.NeuronPsth.populate,                  {'display_progress': display_progress}),
